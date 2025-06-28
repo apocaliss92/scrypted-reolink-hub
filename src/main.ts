@@ -47,13 +47,6 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
             defaultValue: 554,
             type: 'number'
         },
-        eventsFetchSleep: {
-            subgroup: 'Advanced',
-            title: 'Seconds to wait between events fetching',
-            description: 'Increase this number if the hub acts strangely',
-            defaultValue: 2,
-            type: 'number'
-        },
         downloadFolder: {
             title: 'Directory where to cache thumbnails and videoclips',
             description: 'Default to the plugin folder',
@@ -67,6 +60,9 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
             onPut: async () => cleanup(this.storageSettings.values.downloadFolder)
         },
     });
+
+    lastErrorsCheck = Date.now();
+    cameraChannelMap = new Map<number, ReolinkCamera>();
 
     constructor() {
         super();
@@ -89,12 +85,38 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
 
         setInterval(async () => {
             try {
+                const now = Date.now();
                 const client = this.getClient();
-                await client.checkErrors();
+
+                if (now - this.lastErrorsCheck > 60 * 1000) {
+                    this.lastErrorsCheck = now;
+                    await client.checkErrors();
+                }
+
+                const devicesMap = new Map<number, boolean>();
+
+                this.cameraChannelMap.forEach((camera, channel) => {
+                    devicesMap.set(Number(channel), camera.hasPirEvents());
+                })
+
+                const eventsRes = await client.getEvents(devicesMap);
+
+                for (const [channel, value] of Object.entries(eventsRes?.parsed)) {
+                    const cameraMixin = this.cameraChannelMap.get(Number(channel));
+                    if(cameraMixin) {
+                        if(value.motion) {
+                            cameraMixin.motionStart();
+                        } else {
+                            cameraMixin.motionEnd();
+                        }
+
+                        cameraMixin.objectsDetected(value.objects);
+                    }
+                }
             } catch (e) {
-                this.console.log('Error on reconnect', e);
+                this.console.log('Error on main flow', e);
             }
-        }, 1000 * 60);
+        }, 1000);
 
         await sdk.deviceManager.onDeviceDiscovered(
             {

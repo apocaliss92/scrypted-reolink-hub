@@ -709,16 +709,31 @@ export class ReolinkHubClient {
         }
     }
 
-    async getEvents(channel: number) {
+    async getEvents(channelsMap: Map<number, boolean>) {
         const url = new URL(`http://${this.host}/api.cgi`);
 
-        const body = [
-            {
-                cmd: "GetEvents",
-                action: 0,
-                param: { channel }
-            },
-        ];
+        const body = [];
+
+        channelsMap.forEach((isBattery, channel) => {
+            if (isBattery) {
+                body.push({
+                    cmd: 'GetEvents',
+                    action: 0,
+                    param: { channel }
+                });
+            } else {
+                body.push({
+                    cmd: 'GetMdState',
+                    action: 0,
+                    param: { channel }
+                });
+                body.push({
+                    cmd: 'GetAiState',
+                    action: 0,
+                    param: { channel }
+                });
+            }
+        })
 
         const response = await this.requestWithLogin({
             url,
@@ -730,14 +745,52 @@ export class ReolinkHubClient {
             return {};
         }
 
+        const ret: Record<number, { motion: boolean, objects: string[] }> = {};
+
+        const processDetections = (aiResponse: any) => {
+            const classes: string[] = [];
+            for (const key of Object.keys(aiResponse ?? {})) {
+                if (key === 'channel')
+                    continue;
+                const { support, alarm_state } = aiResponse[key];
+                if (alarm_state)
+                    classes.push(key);
+            }
+
+            return classes;
+        }
+
+        for (const item of response.body) {
+            const channel = item?.value?.channel;
+            const cmd = item?.cmd;
+            const numericChannel = Number(channel);
+
+            if (!ret[numericChannel]) {
+                ret[numericChannel] = { motion: false, objects: [] };
+            }
+
+            const elem = ret[numericChannel];
+
+            if (cmd === 'GetEvents') {
+                const classes = processDetections(item.value?.ai);
+                elem.motion = classes.includes('other');
+                elem.objects = classes.filter(cl => cl !== 'other');
+            } else if (cmd === 'GetMdState') {
+                elem.motion = item?.value?.state;
+            } else if (cmd === 'GetAiState') {
+                const classes = processDetections(item.value?.ai);
+                elem.objects = classes;
+            }
+        }
+
         const error = response?.body?.find(elem => elem.error)?.error;
         if (error) {
-            this.console.error('error during call to getEvents', channel, error);
+            this.console.error('error during call to getEvents', error);
         }
 
         return {
-            value: (response?.body?.[0]?.value?.ai || response?.body?.value?.ai) as AIState,
-            data: response?.body,
+            parsed: ret,
+            response: response.body
         };
     }
 

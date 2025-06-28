@@ -236,6 +236,7 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
             };
         };
 
+        this.plugin.cameraChannelMap.set(Number(this.storageSettings.values.rtspChannel), this);
         this.init().catch(this.console.error);
     }
 
@@ -592,151 +593,50 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
         return connectCameraAPI(this.plugin.getHttpAddress(), username, password, this.console, this.storageSettings.values.doorbell ? this.storage.getItem('onvifDoorbellEvent') : undefined);
     }
 
-    async listenEvents() {
-        let killed = false;
-        const client = this.getClient();
+    async motionStart() {
+        if (!this.motionDetected) {
+            this.motionDetected = true;
+            this.motionTimeout && clearTimeout(this.motionTimeout);
+            this.motionTimeout = setTimeout(() => this.motionDetected = false, this.storageSettings.values.motionTimeout * 1000);
+        }
+    };
 
-        // reolink ai might not trigger motion if objects are detected, weird.
-        const startAI = async (ret: Destroyable, triggerMotion: () => void) => {
-            let hasSet = false;
-            while (!killed) {
-                try {
-                    const ai = this.hasPirEvents() ? await client.getEvents(this.getRtspChannel()) : await client.getAiState(this.getRtspChannel());
-                    ret.emit('data', JSON.stringify(ai.data));
+    async motionEnd() {
+        if (this.motionDetected) {
+            this.motionDetected = false;
+            this.motionTimeout && clearTimeout(this.motionTimeout);
+        }
+    };
 
-                    const classes: string[] = [];
-
-                    for (const key of Object.keys(ai.value ?? {})) {
-                        if (key === 'channel')
-                            continue;
-                        const { support } = ai.value[key];
-                        if (support)
-                            classes.push(key);
-                    }
-
-                    if (!classes.length)
-                        return;
-
-
-                    if (!hasSet) {
-                        hasSet = true;
-                        this.storageSettings.values.hasObjectDetector = ai;
-                    }
-
-                    const od: ObjectsDetected = {
-                        timestamp: Date.now(),
-                        detections: [],
-                    };
-                    for (const c of classes) {
-                        const { alarm_state } = ai.value[c];
-                        if (alarm_state) {
-                            od.detections.push({
-                                className: c,
-                                score: 1,
-                            });
-                        }
-                    }
-                    if (od.detections.length) {
-                        triggerMotion();
-                        sdk.deviceManager.onDeviceEvent(this.nativeId, ScryptedInterface.ObjectDetector, od);
-                    }
-                }
-                catch (e) {
-                    ret.emit('error', e);
-                }
-                await sleep(1000 * this.plugin.storageSettings.values.eventsFetchSleep);
+    async objectsDetected(classes: string[]) {
+        if (classes.length) {
+            const od: ObjectsDetected = {
+                timestamp: Date.now(),
+                detections: [],
+            };
+            for (const c of classes) {
+                od.detections.push({
+                    className: c,
+                    score: 1,
+                });
             }
+            sdk.deviceManager.onDeviceEvent(this.nativeId, ScryptedInterface.ObjectDetector, od);
         }
+    };
 
-        const useOnvifDetections: boolean = (this.storageSettings.values.useOnvifDetections === 'Default'
-            && (this.supportsOnvifDetections() || this.storageSettings.values.doorbell))
-            || this.storageSettings.values.useOnvifDetections === 'Enabled';
-        if (useOnvifDetections) {
-            const ret = await listenEvents(this, await this.createOnvifClient(), this.storageSettings.values.motionTimeout * 1000);
-            ret.on('onvifEvent', (eventTopic: string, dataValue: any) => {
-                let className: string;
-                if (eventTopic.includes('PeopleDetect')) {
-                    className = 'people';
-                }
-                else if (eventTopic.includes('FaceDetect')) {
-                    className = 'face';
-                }
-                else if (eventTopic.includes('VehicleDetect')) {
-                    className = 'vehicle';
-                }
-                else if (eventTopic.includes('DogCatDetect')) {
-                    className = 'dog_cat';
-                }
-                else if (eventTopic.includes('Package')) {
-                    className = 'package';
-                }
-                if (className && dataValue) {
-                    ret.emit('event', OnvifEvent.MotionStart);
-
-                    const od: ObjectsDetected = {
-                        timestamp: Date.now(),
-                        detections: [
-                            {
-                                className,
-                                score: 1,
-                            }
-                        ],
-                    };
-                    sdk.deviceManager.onDeviceEvent(this.nativeId, ScryptedInterface.ObjectDetector, od);
-                }
-                else {
-                    ret.emit('event', OnvifEvent.MotionStop);
-                }
-            });
-
-            ret.on('close', () => killed = true);
-            ret.on('error', () => killed = true);
-            return ret;
-        }
-
+    async listenEvents() {
         const events = new EventEmitter();
         const ret: Destroyable = {
             on: function (eventName: string | symbol, listener: (...args: any[]) => void): void {
                 events.on(eventName, listener);
             },
             destroy: function (): void {
-                killed = true;
             },
             emit: function (eventName: string | symbol, ...args: any[]): boolean {
                 return events.emit(eventName, ...args);
             }
         };
 
-        const triggerMotion = () => {
-            this.motionDetected = true;
-            clearTimeout(this.motionTimeout);
-            this.motionTimeout = setTimeout(() => this.motionDetected = false, this.storageSettings.values.motionTimeout * 1000);
-        };
-        (async () => {
-            while (!killed) {
-                try {
-                    // Battey cameras do not have AI state, they just send events in case of PIR sensor triggered
-                    // which equals a motion detected
-                    if (this.hasPirEvents()) {
-                        const { value, data } = await client.getEvents(this.getRtspChannel());
-                        if (!!value?.other?.alarm_state)
-                            triggerMotion();
-                        ret.emit('data', JSON.stringify(data));
-                    } else {
-                        const { value, data } = await client.getMotionState(this.getRtspChannel());
-                        if (value)
-                            triggerMotion();
-                        ret.emit('data', JSON.stringify(data));
-                    }
-                }
-                catch (e) {
-                    ret.emit('error', e);
-                }
-                await sleep(1000 * this.plugin.storageSettings.values.eventsFetchSleep);
-            }
-        })();
-
-        startAI(ret, triggerMotion);
         return ret;
     }
 
