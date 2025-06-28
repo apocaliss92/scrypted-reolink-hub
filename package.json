@@ -1,6 +1,6 @@
 {
   "name": "@apocaliss92/scrypted-reolink-hub",
-  "version": "0.0.16",
+  "version": "0.0.17",
   "description": "Reolink (HUBs) Plugin for Scrypted",
   "author": "Scrypted",
   "license": "Apache",

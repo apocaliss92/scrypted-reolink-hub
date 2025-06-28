@@ -47,6 +47,11 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
             defaultValue: 554,
             type: 'number'
         },
+        logDebug: {
+            subgroup: 'Advanced',
+            title: 'Log debug messages',
+            type: 'boolean'
+        },
         downloadFolder: {
             title: 'Directory where to cache thumbnails and videoclips',
             description: 'Default to the plugin folder',
@@ -101,10 +106,14 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
 
                 const eventsRes = await client.getEvents(devicesMap);
 
+                if (this.storageSettings.values.logDebug) {
+                    this.console.log(`Events call result: ${JSON.stringify(eventsRes)}`);
+                }
+
                 for (const [channel, value] of Object.entries(eventsRes?.parsed)) {
                     const cameraMixin = this.cameraChannelMap.get(Number(channel));
-                    if(cameraMixin) {
-                        if(value.motion) {
+                    if (cameraMixin) {
+                        if (value.motion) {
                             cameraMixin.motionStart();
                         } else {
                             cameraMixin.motionEnd();
@@ -114,7 +123,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                     }
                 }
             } catch (e) {
-                this.console.log('Error on main flow', e);
+                this.console.log('Error on events flow', e);
             }
         }, 1000);
 

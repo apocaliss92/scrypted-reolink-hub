@@ -790,7 +790,8 @@ export class ReolinkHubClient {
 
         return {
             parsed: ret,
-            response: response.body
+            response: response.body,
+            body: response.body
         };
     }
 
