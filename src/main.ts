@@ -64,10 +64,26 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
             group: 'Videoclips',
             onPut: async () => cleanup(this.storageSettings.values.downloadFolder)
         },
+        abilities: {
+            json: true,
+            hide: true,
+            defaultValue: {}
+        },
+        devicesData: {
+            json: true,
+            hide: true,
+            defaultValue: {}
+        },
+        hubData: {
+            json: true,
+            hide: true,
+            defaultValue: {}
+        },
     });
 
     lastErrorsCheck = Date.now();
-    cameraChannelMap = new Map<number, ReolinkCamera>();
+    lastBatteryValuesCheck = Date.now();
+    cameraChannelMap = new Map<string, ReolinkCamera>();
 
     constructor() {
         super();
@@ -99,28 +115,56 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                 }
 
                 const devicesMap = new Map<number, boolean>();
+                const batteryChannels: number[] = [];
+                let anyFound = false;
 
-                this.cameraChannelMap.forEach((camera, channel) => {
-                    devicesMap.set(Number(channel), camera.hasPirEvents());
-                })
+                this.cameraChannelMap.forEach((camera) => {
+                    if (camera) {
+                        const channel = camera.storageSettings.values.rtspChannel;
 
-                const eventsRes = await client.getEvents(devicesMap);
+                        anyFound = true;
+                        const isBattery = camera.hasBattery();
+                        isBattery && batteryChannels.push(Number(channel));
+                        devicesMap.set(Number(channel), isBattery);
+                        // devicesMap.set(Number(channel), camera.hasPirEvents());
+                    }
+                });
 
-                if (this.storageSettings.values.logDebug) {
-                    this.console.log(`Events call result: ${JSON.stringify(eventsRes)}`);
+                if (anyFound) {
+                    const eventsRes = await client.getEvents(devicesMap);
+
+                    if (this.storageSettings.values.logDebug) {
+                        this.console.log(`Events call result: ${JSON.stringify(eventsRes)}`);
+                    }
+
+                    this.cameraChannelMap.forEach((camera) => {
+                        if (camera) {
+                            const channel = camera.storageSettings.values.rtspChannel;
+                            const cameraEventsData = eventsRes?.parsed[channel];
+                            if (cameraEventsData) {
+                                camera.processEvents(cameraEventsData);
+                            }
+                        }
+                    });
                 }
 
-                for (const [channel, value] of Object.entries(eventsRes?.parsed)) {
-                    const cameraMixin = this.cameraChannelMap.get(Number(channel));
-                    if (cameraMixin) {
-                        if (value.motion) {
-                            cameraMixin.motionStart();
-                        } else {
-                            cameraMixin.motionEnd();
-                        }
+                if (now - this.lastBatteryValuesCheck > 10 * 1000 && batteryChannels.length) {
+                    this.lastBatteryValuesCheck = now;
+                    const { batteryInfoData, response } = await client.getBatteryInfo(batteryChannels);
 
-                        cameraMixin.objectsDetected(value.objects);
+                    if (this.storageSettings.values.logDebug) {
+                        this.console.log(`Battery info call result: ${JSON.stringify({ batteryInfoData, response })}`);
                     }
+
+                    this.cameraChannelMap.forEach((camera) => {
+                        if (camera) {
+                            const channel = camera.storageSettings.values.rtspChannel;
+                            const cameraBatteryData = batteryInfoData[channel];
+                            if (cameraBatteryData) {
+                                camera.processBatteryData(cameraBatteryData);
+                            }
+                        }
+                    });
                 }
             } catch (e) {
                 this.console.log('Error on events flow', e);
@@ -135,6 +179,18 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                 type: ScryptedDeviceType.API,
             }
         );
+
+        const { abilities, hubData, } = await client.getHubInfo();
+        const { devicesData, channelsResponse } = await client.getDevicesInfo();
+        this.console.log(`Hub info: ${JSON.stringify({ abilities, hubData, devicesData, channelsResponse })}`);
+
+        this.storageSettings.values.abilities = abilities;
+        this.storageSettings.values.hubData = hubData;
+        this.storageSettings.values.devicesData = devicesData;
+
+        // setTimeout(async () => {
+        //     const client = this.getClient();
+        // }, 1000 * 10);
     }
 
     async onRequest(request: HttpRequest, response: HttpResponse): Promise<void> {
@@ -317,9 +373,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
         return [
             ScryptedInterface.VideoCameraConfiguration,
             ScryptedInterface.Camera,
-            ScryptedInterface.AudioSensor,
             ScryptedInterface.MotionSensor,
-            ScryptedInterface.VideoTextOverlays,
             ScryptedInterface.VideoTextOverlays,
             ScryptedInterface.MixinProvider,
             pluginId,
@@ -336,10 +390,6 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
     async createDevice(settings: DeviceCreatorSettings, nativeId?: string): Promise<string> {
         let info: DeviceInformation = {};
 
-        let name: string = 'Reolink Camera';
-        let deviceInfo: DevInfo;
-        let ai;
-        let abilities;
         const rtspChannel = parseInt(settings.rtspChannel?.toString()) || 0;
         const api = this.getClient();
         try {
@@ -350,29 +400,34 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
             throw e;
         }
 
-        try {
-            deviceInfo = await api.getDeviceInfo(rtspChannel);
-            name = deviceInfo.name ?? 'Reolink Camera';
-            ai = await api.getAiState(rtspChannel);
-            abilities = await api.getAbility(rtspChannel);
-        }
-        catch (e) {
-            this.console.error('Reolink camera does not support AI events', e);
-        }
-        settings.newCamera ||= name;
+        // try {
+        //     // deviceInfo = await api.getDeviceInfo(rtspChannel);
+        //     name = deviceInfo?.name ?? 'Reolink Camera';
+        //     ai = await api.getAiState(rtspChannel);
+        // }
+        // catch (e) {
+        //     this.console.error('Reolink camera does not support AI events', e);
+        // }
+        // const foundName = this.storageSettings.values.devicesData[]
+        const foundName = this.storageSettings.values.devicesData[rtspChannel]?.channelStatus?.name;
+        settings.newCamera ||= foundName ?? 'Reolink Camera';
 
         nativeId = await super.createDevice(settings, nativeId);
 
         const device = await this.getDevice(nativeId) as ReolinkCamera;
         device.info = info;
-        device.storageSettings.values.deviceInfo = deviceInfo;
-        device.storageSettings.values.abilities = abilities;
-        device.storageSettings.values.hasObjectDetector = ai;
         device.storageSettings.values.rtspChannel = rtspChannel;
 
         device.updateDeviceInfo();
 
+        this.cameraChannelMap.set(String(rtspChannel), device);
+
         return nativeId;
+    }
+
+    async releaseDevice(id: string, nativeId: string) {
+        this.cameraChannelMap.delete(id);
+        this.devices.delete(id);
     }
 
     async getCreateDeviceSettings(): Promise<Setting[]> {

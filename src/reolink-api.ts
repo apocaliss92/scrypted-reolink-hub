@@ -7,6 +7,16 @@ import { DevInfo, getLoginParameters } from '../../scrypted/plugins/reolink/src/
 import { HttpFetchOptions } from '../../scrypted/server/src/fetch/http-fetch';
 import { VideoSearchResult, VideoSearchType } from '../../scrypted-reolink-videoclips/src/client';
 
+export interface EventsResponse { motion: boolean, objects: string[], entries: any[] };
+export interface DeviceInfoResponse {
+    channelStatus?: string,
+    ptz?: any,
+    ai?: any,
+    channelInfo?: any,
+    entries: any[]
+};
+export interface BatteryInfoResponse { batteryLevel: number, sleeping: boolean, entries: any[] };
+
 export interface Enc {
     audio: number;
     channel: number;
@@ -161,17 +171,19 @@ export class ReolinkHubClient {
             params.set(k, v);
         }
         const res = await this.request(options, body);
-        const error = res?.body?.find(elem => elem.error)?.error;
+        const errors = res?.body?.filter(elem => elem.error).map(elem => elem.error);
 
-        if (error) {
-            const code = error.rspCode;
-            if ([-6].includes(code)) {
-                this.loginFirstCount++;
-            } else if ([-5].includes(code)) {
-                this.maxSessionsCount++;
-            } else {
-                this.maxSessionsCount = 0;
-                this.loginFirstCount = 0;
+        if (errors.length) {
+            for (const error of errors) {
+                const code = error.rspCode;
+                if ([-6].includes(code)) {
+                    this.loginFirstCount++;
+                } else if ([-5].includes(code)) {
+                    this.maxSessionsCount++;
+                } else {
+                    this.maxSessionsCount = 0;
+                    this.loginFirstCount = 0;
+                }
             }
         }
 
@@ -197,30 +209,6 @@ export class ReolinkHubClient {
 
         return {
             value: response?.body?.[0]?.value?.rspCode,
-            data: response?.body,
-        };
-    }
-
-    // [
-    //     {
-    //        "cmd" : "GetMdState",
-    //        "code" : 0,
-    //        "value" : {
-    //           "state" : 0
-    //        }
-    //     }
-    //  ]
-    async getMotionState(channel: number) {
-        const url = new URL(`http://${this.host}/api.cgi`);
-        const params = url.searchParams;
-        params.set('cmd', 'GetMdState');
-        params.set('channel', String(channel));
-        const response = await this.requestWithLogin({
-            url,
-            responseType: 'json',
-        });
-        return {
-            value: !!response?.body?.[0]?.value?.state,
             data: response?.body,
         };
     }
@@ -317,45 +305,44 @@ export class ReolinkHubClient {
         };
     }
 
-    async getAbility(channel: number) {
+    async getHubInfo() {
         const url = new URL(`http://${this.host}/api.cgi`);
-        const params = url.searchParams;
-        params.set('cmd', 'GetAbility');
-        params.set('channel', String(channel));
-        let response = await this.requestWithLogin({
+        const body = [
+            {
+                cmd: "GetAbility",
+                action: 0,
+                param: { User: { userName: this.username } }
+            },
+            {
+                cmd: "GetAbility",
+                action: 0,
+                param: { User: { userName: this.username } }
+            },
+            {
+                cmd: "GetDevInfo",
+                action: 0,
+                param: {}
+            }
+        ];
+
+        const response = await this.requestWithLogin({
             url,
             responseType: 'json',
-        });
-        let error = response?.body?.[0]?.error;
-        if (error) {
-            this.console.error('error during call to getAbility GET, Trying with POST', error);
+            method: 'POST',
+        }, this.createReadable(body));
 
-            url.search = '';
-
-            const body = [
-                {
-                    cmd: "GetAbility",
-                    action: 0,
-                    param: { User: { userName: this.username } }
-                }
-            ];
-
-            response = await this.requestWithLogin({
-                url,
-                responseType: 'json',
-                method: 'POST',
-            }, this.createReadable(body));
-
-            error = response?.body?.[0]?.error;
-            if (error) {
-                this.console.error('error during call to getAbility GET, Trying with POST', error);
-                throw new Error('error during call to getAbility');
-            }
+        const errors = response?.body?.filter(item => item.error)?.map(item => item.error);
+        if (errors.length) {
+            this.console.error('error during call to getHubInfo', errors);
         }
 
+        const abilities = response.body.find(item => item.cmd === 'GetAbility')?.value;
+        const hubData = response.body.find(item => item.cmd === 'GetDevInfo')?.value;
+
         return {
-            value: response?.body?.[0]?.value || response?.body?.value,
-            data: response?.body,
+            abilities,
+            hubData,
+            response: response.body
         };
     }
 
@@ -387,56 +374,6 @@ export class ReolinkHubClient {
         return response?.body?.[0]?.value?.Enc;
     }
 
-    async getDeviceInfo(channel: number): Promise<DevInfo> {
-        const url = new URL(`http://${this.host}/api.cgi`);
-        const params = url.searchParams;
-        params.set('cmd', 'GetDevInfo');
-        const response = await this.requestWithLogin({
-            url,
-            responseType: 'json',
-        });
-        const error = response?.body?.[0]?.error;
-        if (error) {
-            this.console.error('error during call to getDeviceInfo', error);
-            throw new Error('error during call to getDeviceInfo');
-        }
-
-        const deviceInfo: DevInfo = await response?.body?.[0]?.value?.DevInfo;
-
-        // If the device is listed as homehub, fetch the channel specific information
-        url.search = '';
-        const body = [
-            { cmd: "GetChnTypeInfo", action: 0, param: { channel: channel } },
-            { cmd: "GetChannelstatus", action: 0, param: {} },
-        ]
-
-        const additionalInfoResponse = await this.requestWithLogin({
-            url,
-            method: 'POST',
-            responseType: 'json'
-        }, this.createReadable(body));
-
-        const chnTypeInfo = additionalInfoResponse?.body?.find(elem => elem.cmd === 'GetChnTypeInfo');
-        const chnStatus = additionalInfoResponse?.body?.find(elem => elem.cmd === 'GetChannelstatus');
-
-        if (chnTypeInfo?.value) {
-            deviceInfo.firmVer = chnTypeInfo.value.firmVer;
-            deviceInfo.model = chnTypeInfo.value.typeInfo;
-            deviceInfo.pakSuffix = chnTypeInfo.value.pakSuffix;
-        }
-
-        if (chnStatus?.value) {
-            const specificChannelStatus = chnStatus.value?.status?.find(elem => elem.channel === channel);
-
-            if (specificChannelStatus) {
-                deviceInfo.name = specificChannelStatus.name;
-            }
-        }
-
-
-        return deviceInfo;
-    }
-
     async getPtzPresets(channel: number): Promise<PtzPreset[]> {
         const url = new URL(`http://${this.host}/api.cgi`);
         const params = url.searchParams;
@@ -448,7 +385,7 @@ export class ReolinkHubClient {
                 param: {
                     channel
                 }
-            }
+            },
         ];
         const response = await this.requestWithLogin({
             url,
@@ -674,19 +611,26 @@ export class ReolinkHubClient {
         }
     }
 
-    async getBatteryInfo(channel: number) {
+    async getBatteryInfo(channels: number[]) {
         const url = new URL(`http://${this.host}/api.cgi`);
+        const chanelIndex: Record<number, number> = {};
 
-        const body = [
-            {
-                cmd: "GetBatteryInfo",
-                action: 0,
-                param: { channel }
-            },
+        const body: any[] = [
             {
                 cmd: "GetChannelstatus",
             }
         ];
+
+        for (const channel of channels) {
+            body.push(
+                {
+                    cmd: "GetBatteryInfo",
+                    action: 0,
+                    param: { channel }
+                },
+            );
+            chanelIndex[channel] = body.length - 1;
+        }
 
         const response = await this.requestWithLogin({
             url,
@@ -694,19 +638,49 @@ export class ReolinkHubClient {
             method: 'POST',
         }, this.createReadable(body));
 
-        const error = response?.body?.find(elem => elem.error)?.error;
-        if (error) {
-            this.console.error('error during call to getBatteryInfo', error);
+        const errors = response?.body?.filter(elem => elem.error).map(elem => elem.error);
+        if (errors.length) {
+            this.console.error('error during call to getBatteryInfo', JSON.stringify(errors));
         }
 
-        const batteryInfoEntry = response?.body.find(entry => entry.cmd === 'GetBatteryInfo')?.value?.Battery;
-        const channelStatusEntry = response?.body.find(entry => entry.cmd === 'GetChannelstatus')?.value?.status
-            ?.find(chStatus => chStatus.channel === channel)
+        const channelData: Record<number, BatteryInfoResponse> = {};
+        const channelStatusData = response?.body?.[0];
+        for (const channel of channels) {
+            const batteryInfoEntry = response?.body?.[chanelIndex[channel]]?.value?.Battery;
+            const channelStatusEntry = channelStatusData?.value?.status?.find(elem => elem.channel === channel);
+
+            channelData[channel] = {
+                entries: [batteryInfoEntry, channelStatusEntry],
+                batteryLevel: batteryInfoEntry?.batteryPercent,
+                sleeping: channelStatusEntry?.sleep === 1,
+            };
+        }
 
         return {
-            batteryPercent: batteryInfoEntry?.batteryPercent,
-            sleeping: channelStatusEntry?.sleep === 1,
-        }
+            batteryInfoData: channelData,
+            response: response.body,
+        };
+    }
+
+    async getChannels() {
+        const url = new URL(`http://${this.host}/api.cgi`);
+
+        const channelsBody = [{ cmd: 'GetChannelstatus' }];
+
+        const channelsResponse = await this.requestWithLogin({
+            url,
+            responseType: 'json',
+            method: 'POST',
+        }, this.createReadable(channelsBody));
+
+        const channels = channelsResponse.body?.[0]?.value?.status
+            ?.filter(elem => !!elem.uid)
+            ?.map(elem => elem.channel)
+
+        return {
+            channels,
+            channelsResponse
+        };
     }
 
     async getEvents(channelsMap: Map<number, boolean>) {
@@ -745,7 +719,7 @@ export class ReolinkHubClient {
             return {};
         }
 
-        const ret: Record<number, { motion: boolean, objects: string[] }> = {};
+        const ret: Record<number, EventsResponse> = {};
 
         const processDetections = (aiResponse: any) => {
             const classes: string[] = [];
@@ -762,14 +736,20 @@ export class ReolinkHubClient {
 
         for (const item of response.body) {
             const channel = item?.value?.channel;
-            const cmd = item?.cmd;
             const numericChannel = Number(channel);
 
+            if (Number.isNaN(numericChannel)) {
+                continue;
+            }
+
+            const cmd = item?.cmd;
+
             if (!ret[numericChannel]) {
-                ret[numericChannel] = { motion: false, objects: [] };
+                ret[numericChannel] = { motion: false, objects: [], entries: [] };
             }
 
             const elem = ret[numericChannel];
+            elem.entries.push(item);
 
             if (cmd === 'GetEvents') {
                 const classes = processDetections(item.value?.ai);
@@ -783,15 +763,79 @@ export class ReolinkHubClient {
             }
         }
 
-        const error = response?.body?.find(elem => elem.error)?.error;
-        if (error) {
-            this.console.error('error during call to getEvents', error);
+        const errors = response?.body?.filter(elem => elem.error).map(elem => elem.error);
+        if (errors.length) {
+            this.console.error('error during call to getEvents', JSON.stringify({ errors, body }));
         }
 
         return {
             parsed: ret,
             response: response.body,
             body: response.body
+        };
+    }
+
+    async getDevicesInfo() {
+        const url = new URL(`http://${this.host}/api.cgi`);
+
+        const { channels, channelsResponse } = await this.getChannels();
+
+        const body: any[] = [];
+
+        const responseMap: Record<number, { ptz: number, chnInfo: number, ai: number }> = {};
+
+        for (const channel of channels) {
+            responseMap[channel] = {
+                ptz: body.length,
+                ai: body.length + 1,
+                chnInfo: body.length + 2,
+            }
+            body.push(
+                { cmd: "GetPtzPreset", action: 1, param: { channel } },
+                { cmd: "GetChnTypeInfo", action: 0, param: { channel } },
+                { cmd: "GetAiState", action: 0, param: { channel } },
+            );
+        }
+
+        const response = await this.requestWithLogin({
+            url,
+            responseType: 'json',
+            method: 'POST',
+        }, this.createReadable(body));
+
+        const ret: Record<number, DeviceInfoResponse> = {};
+
+        let currentChannelIndex = 0;
+        for (const channel of channels) {
+            const indexMultilpier = currentChannelIndex * 3;
+
+            const ptzItem = response.body[indexMultilpier];
+            const chnInfoItem = response.body[indexMultilpier + 1];
+            const aiItem = response.body[indexMultilpier + 2];
+
+            const channelStatus = channelsResponse.body?.[0]?.value?.status?.find(item => item?.channel === channel);
+
+            ret[channel] = {
+                entries: [ptzItem, chnInfoItem, aiItem],
+            };
+
+            !ptzItem.error && (ret[channel].ptz = ptzItem?.value);
+            !chnInfoItem.error && (ret[channel].channelInfo = chnInfoItem?.value);
+            !aiItem.error && (ret[channel].ai = aiItem?.value);
+            ret[channel].channelStatus = channelStatus;
+
+            currentChannelIndex++;
+        }
+
+        const errors = response?.body?.filter(elem => elem.error).map(elem => ({ ...elem.error, cmd: elem.cmd }));
+
+        return {
+            devicesData: ret,
+            response: response.body,
+            channels,
+            channelsResponse,
+            requestBody: body,
+            errors,
         };
     }
 
