@@ -1,21 +1,52 @@
 import { AuthFetchCredentialState, authHttpFetch } from '@scrypted/common/src/http-auth-fetch';
 import { PassThrough, Readable } from 'stream';
-
 import { sleep } from "@scrypted/common/src/sleep";
 import { PanTiltZoomCommand, VideoClipOptions } from "@scrypted/sdk";
-import { DevInfo, getLoginParameters } from '../../scrypted/plugins/reolink/src/probe';
-import { HttpFetchOptions } from '../../scrypted/server/src/fetch/http-fetch';
 import { VideoSearchResult, VideoSearchType } from '../../scrypted-reolink-videoclips/src/client';
+import { getLoginParameters } from '../../scrypted/plugins/reolink/src/probe';
+import { HttpFetchOptions } from '../../scrypted/server/src/fetch/http-fetch';
 
+const wakingCoomands = [
+    "GetWhiteLed",
+    "GetZoomFocus",
+    "GetAudioCfg",
+    "GetPtzGuard",
+    "GetAutoReply",
+    "GetPtzTraceSection",
+    "GetAiCfg",
+    "GetAiAlarm",
+    "GetPtzCurPos",
+    "GetAudioAlarm",
+    "GetDingDongList",
+    "GetDingDongCfg",
+    "DingDongOpt",
+    "GetPerformance",
+    "296",
+    "483",
+];
+
+export interface DeviceInputData {
+    hasBattery: boolean,
+    hasPirEvents: boolean,
+    hasFloodlight: boolean,
+    hasPtz: boolean,
+    sleeping: boolean,
+};
 export interface EventsResponse { motion: boolean, objects: string[], entries: any[] };
 export interface DeviceInfoResponse {
     channelStatus?: string,
-    ptz?: any,
     ai?: any,
     channelInfo?: any,
     entries: any[]
 };
 export interface BatteryInfoResponse { batteryLevel: number, sleeping: boolean, entries: any[] };
+export interface DeviceStatusResponse {
+    floodlightEnabled?: boolean,
+    pirEnabled?: boolean,
+    ptzPresets?: any[],
+    osd?: any[],
+    entries: any[]
+};
 
 export interface Enc {
     audio: number;
@@ -123,7 +154,7 @@ export class ReolinkHubClient {
     }
 
     async login() {
-        if (this.tokenLease > Date.now()) {
+        if (this.tokenLease && this.tokenLease > Date.now()) {
             return;
         }
 
@@ -131,7 +162,12 @@ export class ReolinkHubClient {
             return;
         }
         this.loggingIn = true;
-        this.console.log(`token expired at ${this.tokenLease}, renewing...`);
+
+        if (!this.tokenLease) {
+            this.console.log(`Creating authentication session`);
+        } else {
+            this.console.log(`Token expired at ${new Date(this.tokenLease).toISOString()}, renewing`);
+        }
 
         const { parameters, leaseTimeSeconds } = await getLoginParameters(this.host, this.username, this.password, true);
         this.parameters = parameters;
@@ -244,7 +280,7 @@ export class ReolinkHubClient {
             {
                 cmd: "GetOsd",
                 action: 1,
-                param: { channel: channel }
+                param: { channel }
             },
         ];
 
@@ -270,7 +306,7 @@ export class ReolinkHubClient {
                 cmd: "SetOsd",
                 param: {
                     Osd: {
-                        channel: channel,
+                        channel,
                         osdChannel: osd.value.Osd.osdChannel,
                         osdTime: osd.value.Osd.osdTime,
                     }
@@ -305,6 +341,13 @@ export class ReolinkHubClient {
         };
     }
 
+    printErrors(response: any, action: string, body: any[]) {
+        const errors = response?.body?.filter(elem => elem.error).map(elem => ({ ...elem.error, cmd: elem.cmd }));
+        if (errors.length) {
+            this.console.error(`error during call to ${action}`, JSON.stringify({ errors, body }));
+        }
+    }
+
     async getHubInfo() {
         const url = new URL(`http://${this.host}/api.cgi`);
         const body = [
@@ -331,10 +374,7 @@ export class ReolinkHubClient {
             method: 'POST',
         }, this.createReadable(body));
 
-        const errors = response?.body?.filter(item => item.error)?.map(item => item.error);
-        if (errors.length) {
-            this.console.error('error during call to getHubInfo', errors);
-        }
+        this.printErrors(response, 'getHubInfo', body);
 
         const abilities = response.body.find(item => item.cmd === 'GetAbility')?.value;
         const hubData = response.body.find(item => item.cmd === 'GetDevInfo')?.value;
@@ -372,27 +412,6 @@ export class ReolinkHubClient {
         });
 
         return response?.body?.[0]?.value?.Enc;
-    }
-
-    async getPtzPresets(channel: number): Promise<PtzPreset[]> {
-        const url = new URL(`http://${this.host}/api.cgi`);
-        const params = url.searchParams;
-        params.set('cmd', 'GetPtzPreset');
-        const body = [
-            {
-                cmd: "GetPtzPreset",
-                action: 1,
-                param: {
-                    channel
-                }
-            },
-        ];
-        const response = await this.requestWithLogin({
-            url,
-            responseType: 'json',
-            method: 'POST'
-        }, this.createReadable(body));
-        return response?.body?.[0]?.value?.PtzPreset?.filter(preset => preset.enable === 1);
     }
 
     private async ptzOp(channel: number, op: string, speed: number, id?: number) {
@@ -498,7 +517,7 @@ export class ReolinkHubClient {
         const body = [{
             cmd: 'GetAudioAlarmV20',
             action: 0,
-            param: { channel: channel }
+            param: { channel }
         }];
 
         const response = await this.requestWithLogin({
@@ -556,35 +575,10 @@ export class ReolinkHubClient {
         };
     }
 
-    async getWhiteLedState(channel: number) {
-        const url = new URL(`http://${this.host}/api.cgi`);
-
-        const body = [{
-            cmd: 'GetWhiteLed',
-            action: 0,
-            param: { channel: channel }
-        }];
-
-        const response = await this.requestWithLogin({
-            url,
-            method: 'POST',
-            responseType: 'json',
-        }, this.createReadable(body));
-
-        const error = response?.body?.[0]?.error;
-        if (error) {
-            this.console.error('error during call to getWhiteLedState', JSON.stringify(body), error);
-        }
-
-        return {
-            enabled: response?.body?.[0]?.value?.WhiteLed?.state === 1
-        };
-    }
-
     async setWhiteLedState(channel: number, on?: boolean, brightness?: number) {
         const url = new URL(`http://${this.host}/api.cgi`);
 
-        const settings: any = { channel: channel };
+        const settings: any = { channel };
 
         if (on !== undefined) {
             settings.state = on ? 1 : 0;
@@ -611,7 +605,110 @@ export class ReolinkHubClient {
         }
     }
 
-    async getBatteryInfo(channels: number[]) {
+    async getStatusInfo(channelsMap: Map<number, DeviceInputData>) {
+        const url = new URL(`http://${this.host}/api.cgi`);
+        const chanelIndex: Record<number, { osd?: number, floodlight?: number, pir?: number, presets?: number }> = {};
+
+        const body: any[] = [];
+
+        channelsMap.forEach(({ hasFloodlight, hasPirEvents, hasPtz, sleeping }, channel) => {
+            chanelIndex[channel] = {};
+
+            if (!sleeping) {
+                body.push(
+                    {
+                        cmd: "GetOsd",
+                        action: 1,
+                        param: { channel }
+                    }
+                );
+                chanelIndex[channel].osd = body.length - 1;
+
+                if (hasFloodlight) {
+                    body.push(
+                        {
+                            cmd: 'GetWhiteLed',
+                            action: 0,
+                            param: { channel }
+                        },
+                    );
+                    chanelIndex[channel].floodlight = body.length - 1;
+                }
+
+                if (hasPirEvents) {
+                    body.push(
+                        {
+                            cmd: 'GetPirInfo',
+                            action: 0,
+                            param: { channel }
+                        }
+                    );
+                    chanelIndex[channel].pir = body.length - 1;
+                }
+
+                if (hasPtz) {
+                    body.push(
+                        {
+                            cmd: "GetPtzPreset",
+                            action: 1,
+                            param: {
+                                channel
+                            }
+                        }
+                    );
+                    chanelIndex[channel].presets = body.length - 1;
+                }
+            }
+        });
+        const channelData: Record<number, DeviceStatusResponse> = {};
+
+        const response = await this.requestWithLogin({
+            url,
+            responseType: 'json',
+            method: 'POST',
+        }, this.createReadable(body));
+
+        this.printErrors(response, 'getStatusInfo', body);
+
+
+        channelsMap.forEach(({ hasFloodlight, hasPirEvents, hasPtz }, channel) => {
+            const { floodlight, pir, presets, osd } = chanelIndex[channel];
+            channelData[channel] = { entries: [] };
+
+            if (osd !== undefined) {
+                const osdEntry = response?.body?.[osd];
+                channelData[channel].osd = osdEntry;
+                channelData[channel].entries.push(osdEntry);
+            }
+
+            if (hasFloodlight && floodlight !== undefined) {
+                const floodlightEntry = response?.body?.[floodlight];
+                channelData[channel].floodlightEnabled = floodlightEntry?.value?.WhiteLed?.state === 1;
+                channelData[channel].entries.push(floodlightEntry);
+
+            }
+
+            if (hasPirEvents && pir !== undefined) {
+                const pirEntry = response?.body?.[pir];
+                channelData[channel].pirEnabled = pirEntry?.value?.pirInfo?.enable === 1
+                channelData[channel].entries.push(pirEntry);
+
+            }
+
+            if (hasPtz && presets !== undefined) {
+                const ptzPresetsEntry = response?.body?.[presets];
+                channelData[channel].ptzPresets = ptzPresetsEntry?.value?.PtzPreset?.filter(preset => preset.enable === 1);
+                channelData[channel].entries.push(ptzPresetsEntry);
+            }
+        });
+
+        return {
+            deviceStatusData: channelData,
+            response: response.body,
+        };
+    }
+
+    async getBatteryInfo(channelsMap: Map<number, DeviceInputData>) {
         const url = new URL(`http://${this.host}/api.cgi`);
         const chanelIndex: Record<number, number> = {};
 
@@ -620,6 +717,13 @@ export class ReolinkHubClient {
                 cmd: "GetChannelstatus",
             }
         ];
+
+        const channels: number[] = [];
+        channelsMap.forEach(({ hasBattery }, channel) => {
+            if (hasBattery) {
+                channels.push(channel)
+            }
+        });
 
         for (const channel of channels) {
             body.push(
@@ -638,10 +742,7 @@ export class ReolinkHubClient {
             method: 'POST',
         }, this.createReadable(body));
 
-        const errors = response?.body?.filter(elem => elem.error).map(elem => elem.error);
-        if (errors.length) {
-            this.console.error('error during call to getBatteryInfo', JSON.stringify(errors));
-        }
+        this.printErrors(response, 'getBatteryInfo', body);
 
         const channelData: Record<number, BatteryInfoResponse> = {};
         const channelStatusData = response?.body?.[0];
@@ -683,13 +784,13 @@ export class ReolinkHubClient {
         };
     }
 
-    async getEvents(channelsMap: Map<number, boolean>) {
+    async getEvents(channelsMap: Map<number, DeviceInputData>) {
         const url = new URL(`http://${this.host}/api.cgi`);
 
         const body = [];
 
-        channelsMap.forEach((isBattery, channel) => {
-            if (isBattery) {
+        channelsMap.forEach(({ hasPirEvents }, channel) => {
+            if (hasPirEvents) {
                 body.push({
                     cmd: 'GetEvents',
                     action: 0,
@@ -763,10 +864,7 @@ export class ReolinkHubClient {
             }
         }
 
-        const errors = response?.body?.filter(elem => elem.error).map(elem => elem.error);
-        if (errors.length) {
-            this.console.error('error during call to getEvents', JSON.stringify({ errors, body }));
-        }
+        this.printErrors(response, 'getEvents', body);
 
         return {
             parsed: ret,
@@ -782,16 +880,14 @@ export class ReolinkHubClient {
 
         const body: any[] = [];
 
-        const responseMap: Record<number, { ptz: number, chnInfo: number, ai: number }> = {};
+        const responseMap: Record<number, { chnInfo: number, ai: number }> = {};
 
         for (const channel of channels) {
             responseMap[channel] = {
-                ptz: body.length,
-                ai: body.length + 1,
-                chnInfo: body.length + 2,
+                ai: body.length,
+                chnInfo: body.length + 1,
             }
             body.push(
-                { cmd: "GetPtzPreset", action: 1, param: { channel } },
                 { cmd: "GetChnTypeInfo", action: 0, param: { channel } },
                 { cmd: "GetAiState", action: 0, param: { channel } },
             );
@@ -809,17 +905,15 @@ export class ReolinkHubClient {
         for (const channel of channels) {
             const indexMultilpier = currentChannelIndex * 3;
 
-            const ptzItem = response.body[indexMultilpier];
-            const chnInfoItem = response.body[indexMultilpier + 1];
-            const aiItem = response.body[indexMultilpier + 2];
+            const chnInfoItem = response.body[indexMultilpier];
+            const aiItem = response.body[indexMultilpier + 1];
 
             const channelStatus = channelsResponse.body?.[0]?.value?.status?.find(item => item?.channel === channel);
 
             ret[channel] = {
-                entries: [ptzItem, chnInfoItem, aiItem],
+                entries: [chnInfoItem, aiItem],
             };
 
-            !ptzItem.error && (ret[channel].ptz = ptzItem?.value);
             !chnInfoItem.error && (ret[channel].channelInfo = chnInfoItem?.value);
             !aiItem.error && (ret[channel].ai = aiItem?.value);
             ret[channel].channelStatus = channelStatus;
@@ -827,7 +921,7 @@ export class ReolinkHubClient {
             currentChannelIndex++;
         }
 
-        const errors = response?.body?.filter(elem => elem.error).map(elem => ({ ...elem.error, cmd: elem.cmd }));
+        this.printErrors(response, 'getDevicesInfo', body);
 
         return {
             devicesData: ret,
@@ -835,7 +929,6 @@ export class ReolinkHubClient {
             channels,
             channelsResponse,
             requestBody: body,
-            errors,
         };
     }
 
@@ -845,7 +938,7 @@ export class ReolinkHubClient {
         const body = [{
             cmd: 'GetPirInfo',
             action: 0,
-            param: { channel: channel }
+            param: { channel }
         }];
 
         const response = await this.requestWithLogin({
@@ -877,7 +970,7 @@ export class ReolinkHubClient {
 
         const pirInfo = {
             ...currentPir,
-            channel: channel,
+            channel,
             enable: newState
         }
 
@@ -911,7 +1004,7 @@ export class ReolinkHubClient {
             {
                 cmd: 'GetWifiSignal',
                 action: 0,
-                param: { channel: channel }
+                param: { channel }
             },
         ];
 

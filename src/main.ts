@@ -7,7 +7,7 @@ import { DevInfo } from '../../scrypted/plugins/reolink/src/probe';
 import { RtspProvider } from "../../scrypted/plugins/rtsp/src/rtsp";
 import { name } from '../package.json';
 import { ReolinkCamera } from "./camera";
-import { ReolinkHubClient } from './reolink-api';
+import { DeviceInputData, ReolinkHubClient } from './reolink-api';
 import ReolinkVideoclips from "./videoclips";
 
 export const pluginId = name;
@@ -83,6 +83,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
 
     lastErrorsCheck = Date.now();
     lastBatteryValuesCheck = Date.now();
+    lastDevicesStatusCheck = Date.now();
     cameraChannelMap = new Map<string, ReolinkCamera>();
 
     constructor() {
@@ -114,19 +115,36 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                     await client.checkErrors();
                 }
 
-                const devicesMap = new Map<number, boolean>();
-                const batteryChannels: number[] = [];
+                const devicesMap = new Map<number, DeviceInputData>();
+                let anyBattery = false;
+                let anyAwaken = false;
                 let anyFound = false;
 
                 this.cameraChannelMap.forEach((camera) => {
                     if (camera) {
+                        anyFound = true;
                         const channel = camera.storageSettings.values.rtspChannel;
 
-                        anyFound = true;
-                        const isBattery = camera.hasBattery();
-                        isBattery && batteryChannels.push(Number(channel));
-                        devicesMap.set(Number(channel), isBattery);
-                        // devicesMap.set(Number(channel), camera.hasPirEvents());
+                        const hasBattery = camera.hasBattery();
+                        const hasPirEvents = camera.hasPirEvents();
+                        const hasFloodlight = camera.hasFloodlight();
+                        const sleeping = camera.sleeping;
+                        const { hasPtz } = camera.getPtzCapabilities();
+                        devicesMap.set(Number(channel), {
+                            hasFloodlight,
+                            hasBattery,
+                            hasPirEvents,
+                            hasPtz,
+                            sleeping
+                        });
+
+                        if (hasBattery && !anyBattery) {
+                            anyBattery = true;
+                        }
+
+                        if (!sleeping && !anyAwaken) {
+                            anyAwaken = true;
+                        }
                     }
                 });
 
@@ -148,9 +166,9 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                     });
                 }
 
-                if (now - this.lastBatteryValuesCheck > 10 * 1000 && batteryChannels.length) {
+                if (now - this.lastBatteryValuesCheck > 10 * 1000 && anyBattery) {
                     this.lastBatteryValuesCheck = now;
-                    const { batteryInfoData, response } = await client.getBatteryInfo(batteryChannels);
+                    const { batteryInfoData, response } = await client.getBatteryInfo(devicesMap);
 
                     if (this.storageSettings.values.logDebug) {
                         this.console.log(`Battery info call result: ${JSON.stringify({ batteryInfoData, response })}`);
@@ -162,6 +180,25 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                             const cameraBatteryData = batteryInfoData[channel];
                             if (cameraBatteryData) {
                                 camera.processBatteryData(cameraBatteryData);
+                            }
+                        }
+                    });
+                }
+
+                if (now - this.lastDevicesStatusCheck > 15 * 1000 && anyAwaken) {
+                    this.lastDevicesStatusCheck = now;
+                    const { deviceStatusData, response } = await client.getStatusInfo(devicesMap);
+
+                    if (this.storageSettings.values.logDebug) {
+                        this.console.log(`Status info call result: ${JSON.stringify({ deviceStatusData, response })}`);
+                    }
+
+                    this.cameraChannelMap.forEach((camera) => {
+                        if (camera) {
+                            const channel = camera.storageSettings.values.rtspChannel;
+                            const cameraDeviceStatusData = deviceStatusData[channel];
+                            if (cameraDeviceStatusData) {
+                                camera.processDeviceStatusDatta(cameraDeviceStatusData);
                             }
                         }
                     });
@@ -400,15 +437,6 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
             throw e;
         }
 
-        // try {
-        //     // deviceInfo = await api.getDeviceInfo(rtspChannel);
-        //     name = deviceInfo?.name ?? 'Reolink Camera';
-        //     ai = await api.getAiState(rtspChannel);
-        // }
-        // catch (e) {
-        //     this.console.error('Reolink camera does not support AI events', e);
-        // }
-        // const foundName = this.storageSettings.values.devicesData[]
         const foundName = this.storageSettings.values.devicesData[rtspChannel]?.channelStatus?.name;
         settings.newCamera ||= foundName ?? 'Reolink Camera';
 

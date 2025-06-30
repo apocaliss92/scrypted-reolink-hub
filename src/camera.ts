@@ -1,14 +1,12 @@
 import { sleep } from '@scrypted/common/src/sleep';
-import sdk, { Brightness, Camera, Device, DeviceProvider, Intercom, MediaObject, ObjectDetectionTypes, ObjectDetector, ObjectsDetected, OnOff, PanTiltZoom, PanTiltZoomCommand, RequestPictureOptions, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting, Sleep, VideoTextOverlay, VideoTextOverlays } from "@scrypted/sdk";
+import sdk, { Settings, Brightness, Camera, Device, DeviceProvider, Intercom, MediaObject, ObjectDetectionTypes, ObjectDetector, ObjectsDetected, OnOff, PanTiltZoom, PanTiltZoomCommand, RequestPictureOptions, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, Setting, Sleep, VideoTextOverlay, VideoTextOverlays } from "@scrypted/sdk";
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
 import { EventEmitter } from "stream";
-import { connectCameraAPI, OnvifCameraAPI, OnvifEvent } from '../../scrypted/plugins/reolink/src/onvif-api';
-import { listenEvents } from '../../scrypted/plugins/reolink/src/onvif-events';
+import { connectCameraAPI, OnvifCameraAPI } from '../../scrypted/plugins/reolink/src/onvif-api';
 import { OnvifIntercom } from '../../scrypted/plugins/reolink/src/onvif-intercom';
-import { DevInfo } from '../../scrypted/plugins/reolink/src/probe';
 import { createRtspMediaStreamOptions, Destroyable, RtspSmartCamera, UrlMediaStreamOptions } from "../../scrypted/plugins/rtsp/src/rtsp";
 import ReolinkProvider from './main';
-import { AIState, BatteryInfoResponse, DeviceInfoResponse, Enc, EventsResponse } from './reolink-api';
+import { AIState, BatteryInfoResponse, DeviceInfoResponse, DeviceStatusResponse, Enc, EventsResponse } from './reolink-api';
 
 export const moToB64 = async (mo: MediaObject) => {
     const bufferImage = await sdk.mediaManager.convertMediaObjectToBuffer(mo, 'image/jpeg');
@@ -120,6 +118,7 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
     lastB64Snapshot: string;
     lastSnapshotTaken: number;
     plugin: ReolinkProvider;
+    eventsEmitter: Destroyable;
 
     storageSettings = new StorageSettings(this, {
         doorbell: {
@@ -141,20 +140,6 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
             title: 'Motion Timeout',
             defaultValue: 20,
             type: 'number',
-        },
-        ptz: {
-            subgroup: 'Advanced',
-            title: 'PTZ Capabilities',
-            choices: [
-                'Pan',
-                'Tilt',
-                'Zoom',
-            ],
-            multiple: true,
-            onPut: async () => {
-                await this.updateDevice();
-                this.updatePtzCaps();
-            },
         },
         presets: {
             subgroup: 'Advanced',
@@ -185,21 +170,31 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
             json: true,
             defaultValue: [],
         },
-        useOnvifDetections: {
-            subgroup: 'Advanced',
-            title: 'Use ONVIF for Object Detection',
-            choices: [
-                'Default',
-                'Enabled',
-                'Disabled',
-            ],
-            defaultValue: 'Default',
+        cachedOsd: {
+            multiple: true,
+            hide: true,
+            json: true,
+            defaultValue: [],
         },
+        // useOnvifDetections: {
+        //     subgroup: 'Advanced',
+        //     title: 'Use ONVIF for Object Detection',
+        //     choices: [
+        //         'Default',
+        //         'Enabled',
+        //         'Disabled',
+        //     ],
+        //     defaultValue: 'Default',
+        // },
         useOnvifTwoWayAudio: {
             subgroup: 'Advanced',
             title: 'Use ONVIF for Two-Way Audio',
             type: 'boolean',
         },
+        prebufferSet: {
+            type: 'boolean',
+            hide: true
+        }
     });
 
     constructor(nativeId: string, provider: ReolinkProvider) {
@@ -212,11 +207,11 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
             }
         };
 
-        this.storageSettings.settings.ptz.onGet = async () => {
-            return {
-                hide: !!this.storageSettings.values.doorbell,
-            }
-        };
+        // this.storageSettings.settings.ptz.onGet = async () => {
+        //     return {
+        //         hide: !!this.storageSettings.values.doorbell,
+        //     }
+        // };
 
         this.storageSettings.settings.presets.onGet = async () => {
             const choices = this.storageSettings.values.cachedPresets.map((preset) => preset.id + '=' + preset.name);
@@ -242,21 +237,19 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
             }
 
             this.updatePtzCaps();
-            // try {
-            //     await this.getPresets();
-            // } catch (e) {
-            //     this.console.log('Fail fetching presets', e);
-            // }
             await this.updateDevice();
             await this.reportDevices();
-            // this.startDevicesStatesPolling();
             this.updateDeviceInfo();
 
-            // const currentPrebuffer = this.storage.getItem('prebuffer:enabledStreams');
-            // if (this.hasBattery() && !currentPrebuffer) {
-            //     this.console.log('Disabling prebbufer for battery cam');
-            //     super.putSetting('prebuffer:enabledStreams', []);
-            // }
+            if (this.hasBattery() && !this.storageSettings.getItem('prebufferSet')) {
+                const device = sdk.systemManager.getDeviceById<Settings>(this.id);
+                // const allSettings = await device.getSettings();
+                // const currentPrebuffer = allSettings.find(item => item.key === 'prebuffer:enabledStreams');
+                // this.console.log(JSON.stringify(currentPrebuffer));
+                this.console.log('Disabling prebbufer for battery cam');
+                await device.putSetting('prebuffer:enabledStreams', '[]');
+                this.storageSettings.values.prebufferSet = true;
+            }
         }, 5000);
     }
 
@@ -264,62 +257,19 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
         return this.plugin.getClient();
     }
 
-    async pollDeviceStates() {
-        try {
-            const api = this.getClient();
-            if (!api) {
-                return;
-            }
-
-            try {
-                if (this.hasFloodlight() && this.floodlight) {
-                    const { enabled } = await api.getWhiteLedState(this.getRtspChannel());
-
-                    if (enabled !== this.floodlight.on) {
-                        this.floodlight.on = enabled;
-                    }
-                }
-            } catch { }
-
-            try {
-                if (this.hasPirEvents() && this.pirSensor) {
-                    const { enabled } = await api.getPirState(this.getRtspChannel());
-
-                    if (enabled !== this.pirSensor.on) {
-                        this.pirSensor.on = enabled;
-                    }
-                }
-            } catch { }
-        } catch (e) {
-            this.console.error('Error in pollDeviceStates', e);
-        }
-    }
-
-    async startDevicesStatesPolling() {
-        if (
-            !this.hasBattery() &&
-            (this.hasFloodlight() || this.hasSiren() || this.hasPirEvents())
-        ) {
-            while (true) {
-                await this.pollDeviceStates();
-                await sleep(1000 * 5);
-            }
-        }
-    }
-
     async getVideoTextOverlays(): Promise<Record<string, VideoTextOverlay>> {
         const client = this.getClient();
         if (!client) {
             return;
         }
-        const osd = await client.getOsd(this.getRtspChannel());
+        const { cachedOsd } = this.storageSettings.values;
 
         return {
             osdChannel: {
-                text: osd.value.Osd.osdChannel.enable ? osd.value.Osd.osdChannel.name : undefined,
+                text: cachedOsd.value.Osd.osdChannel.enable ? cachedOsd.value.Osd.osdChannel.name : undefined,
             },
             osdTime: {
-                text: !!osd.value.Osd.osdTime.enable,
+                text: !!cachedOsd.value.Osd.osdTime.enable,
                 readonly: true,
             }
         }
@@ -352,23 +302,13 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
     }
 
     updatePtzCaps() {
-        const { ptz } = this.storageSettings.values;
+        const { hasPanTilt, hasZoom } = this.getPtzCapabilities();
         this.ptzCapabilities = {
             ...this.ptzCapabilities,
-            pan: ptz?.includes('Pan'),
-            tilt: ptz?.includes('Tilt'),
-            zoom: ptz?.includes('Zoom'),
+            pan: hasPanTilt,
+            tilt: hasPanTilt,
+            zoom: hasZoom,
         }
-    }
-
-    async getPresets() {
-        const client = this.getClient();
-        if (!client) {
-            return;
-        }
-        const ptzPresets = await client.getPtzPresets(this.getRtspChannel());
-        // this.console.log(`Presets: ${JSON.stringify(ptzPresets)}`)
-        this.storageSettings.values.cachedPresets = ptzPresets;
     }
 
     getAbilities() {
@@ -434,7 +374,6 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
         const hasAbility = abilities?.supportAudioAlarm;
 
         return (hasAbility && hasAbility?.ver !== 0);
-
     }
 
     hasFloodlight() {
@@ -451,6 +390,26 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
         const abilities = this.getAbilities();
         const batteryConfigVer = abilities?.battery?.ver ?? 0;
         return batteryConfigVer > 0;
+    }
+
+    getPtzCapabilities() {
+        const abilities = this.getAbilities();
+        const hasZoom = (abilities?.supportDigitalZoom?.ver ?? 0) > 0;
+        const hasPanTilt = (abilities?.ptzCtrl?.ver ?? 0) > 0;
+        const hasPresets = (abilities?.ptzPreset?.ver ?? 0) > 0;
+
+        return {
+            hasZoom,
+            hasPanTilt,
+            hasPresets,
+            hasPtz: hasZoom || hasPanTilt || hasPresets
+        };
+    }
+
+    hasPtzCtrl() {
+        const abilities = this.getAbilities();
+        const zoomVer = abilities?.supportDigitalZoom?.ver ?? 0;
+        return zoomVer > 0;
     }
 
     hasPirEvents() {
@@ -475,10 +434,12 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
                 ScryptedInterface.Intercom
             );
         }
+        const rtspChannel = this.getRtspChannel()
+        name = this.plugin.storageSettings.values.devicesData[rtspChannel]?.channelStatus?.name;
 
-        if (this.storageSettings.values.ptz?.length) {
-            interfaces.push(ScryptedInterface.PanTiltZoom);
-        }
+        // if (this.storageSettings.values.ptz?.length) {
+        //     interfaces.push(ScryptedInterface.PanTiltZoom);
+        // }
         if ((await this.getObjectTypes()).classes.length > 0) {
             interfaces.push(ScryptedInterface.ObjectDetector);
         }
@@ -488,24 +449,48 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
             interfaces.push(ScryptedInterface.Battery, ScryptedInterface.Sleep);
         }
 
-        await this.provider.updateDevice(this.nativeId, this.name ?? name, interfaces, type);
+        await this.provider.updateDevice(this.nativeId, name ?? this.name, interfaces, type);
     }
 
     async processBatteryData(data: BatteryInfoResponse) {
+        this.eventsEmitter.emit('data', JSON.stringify(data));
         const { batteryLevel, sleeping } = data;
 
         if (this.storageSettings.values.logDebug) {
-            this.console.log(`Battery info data result: ${JSON.stringify(data)}`);
+            this.console.log(`Battery info received: ${JSON.stringify(data)}`);
         }
 
         if (sleeping !== this.sleeping) {
             this.sleeping = sleeping;
-            if (!sleeping) {
-                await this.pollDeviceStates();
-            }
         }
+
         if (batteryLevel !== this.batteryLevel) {
             this.batteryLevel = batteryLevel;
+        }
+    }
+
+    async processDeviceStatusDatta(data: DeviceStatusResponse) {
+        this.eventsEmitter.emit('data', JSON.stringify(data));
+        const { floodlightEnabled, pirEnabled, ptzPresets, osd } = data;
+
+        if (this.storageSettings.values.logDebug) {
+            this.console.log(`Device status received: ${JSON.stringify(data)}`);
+        }
+
+        if (floodlightEnabled !== this.floodlight.on) {
+            this.floodlight.on = floodlightEnabled;
+        }
+
+        if (pirEnabled !== this.pirSensor.on) {
+            this.pirSensor.on = pirEnabled;
+        }
+
+        if (ptzPresets) {
+            this.storageSettings.values.cachedPresets = ptzPresets
+        }
+
+        if (osd) {
+            this.storageSettings.values.cachedOsd = osd
         }
     }
 
@@ -545,6 +530,7 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
     }
 
     async processEvents(events: EventsResponse) {
+        this.eventsEmitter.emit('data', JSON.stringify(events));
         if (this.storageSettings.values.logDebug) {
             this.console.log(`Events received: ${JSON.stringify(events)}`);
         }
@@ -590,44 +576,49 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
             }
         };
 
+        this.eventsEmitter = ret;
         return ret;
     }
 
-    async takeSmartCameraPicture(options?: RequestPictureOptions): Promise<MediaObject> {
+    async takeSnapshotInternal(timeout?: number) {
+        const now = Date.now();
         const client = this.getClient();
-        if (!client) {
-            return;
-        }
+        const mo = await this.createMediaObject(await client.jpegSnapshot(this.getRtspChannel(), timeout), 'image/jpeg');
+        this.lastB64Snapshot = await moToB64(mo);
+        this.lastSnapshotTaken = now;
 
-        const isEvent = options?.reason === 'event';
+        return mo;
+    }
+
+    async takeSmartCameraPicture(options?: RequestPictureOptions): Promise<MediaObject> {
         const isBattery = this.hasBattery();
-        const batteryThreshold = isEvent ? 2 : 5;
+        const now = Date.now();
 
+        const isMaxTimePassed = !this.lastSnapshotTaken || ((now - this.lastSnapshotTaken) > 1000 * 60 * 60);
+        const isBatteryTimePassed = !this.lastSnapshotTaken || ((now - this.lastSnapshotTaken) > 1000 * 15);
         let canTake = false;
-        if (this.sleeping) {
-            canTake = false;
+
+        if (!this.lastB64Snapshot || !this.lastSnapshotTaken) {
+            this.console.log('Allowing new snapshot because not taken yet');
+            canTake = true;
+        } else if (this.sleeping && isMaxTimePassed) {
+            this.console.log('Allowing new snapshot while sleeping because older than 1 hour');
+            canTake = true;
+        } else if (!this.sleeping && isBattery && isBatteryTimePassed) {
+            this.console.log('Allowing new snapshot because older than 15 seconds');
+            canTake = true;
         } else {
-            const now = Date.now();
-            if (isBattery) {
-                if (!this.lastSnapshotTaken || (now - this.lastSnapshotTaken) > batteryThreshold) {
-                    canTake = true;
-                } else {
-                    canTake = false;
-                }
-            } else {
-                canTake = true;
-            }
+            canTake = true;
         }
 
         if (canTake) {
-            const mo = await this.createMediaObject(await client.jpegSnapshot(this.getRtspChannel(), options?.timeout), 'image/jpeg');
-            this.lastB64Snapshot = await moToB64(mo);
-
-            return mo;
-        } else {
+            return this.takeSnapshotInternal(options?.timeout);
+        } else if (this.lastB64Snapshot) {
             const mo = await b64ToMo(this.lastB64Snapshot);
 
             return mo;
+        } else {
+            return null;
         }
     }
 
