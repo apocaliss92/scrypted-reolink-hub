@@ -6,7 +6,7 @@ import { connectCameraAPI, OnvifCameraAPI } from '../../scrypted/plugins/reolink
 import { OnvifIntercom } from '../../scrypted/plugins/reolink/src/onvif-intercom';
 import { createRtspMediaStreamOptions, Destroyable, RtspSmartCamera, UrlMediaStreamOptions } from "../../scrypted/plugins/rtsp/src/rtsp";
 import ReolinkProvider from './main';
-import { AIState, BatteryInfoResponse, DeviceInfoResponse, DeviceStatusResponse, Enc, EventsResponse } from './reolink-api';
+import { AIState, BatteryInfoResponse, DeviceStatusResponse, Enc, EventsResponse } from './reolink-api';
 
 export const moToB64 = async (mo: MediaObject) => {
     const bufferImage = await sdk.mediaManager.convertMediaObjectToBuffer(mo, 'image/jpeg');
@@ -521,12 +521,6 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
     createOnvifClient() {
         const { username, password } = this.plugin.storageSettings.values;
         return connectCameraAPI(this.plugin.getHttpAddress(), username, password, this.console, this.storageSettings.values.doorbell ? this.storage.getItem('onvifDoorbellEvent') : undefined);
-    }
-
-    async processDeviceInfo(info: DeviceInfoResponse) {
-        if (this.storageSettings.values.logDebug) {
-            this.console.log(`Device  received: ${JSON.stringify(info)}`);
-        }
     }
 
     async processEvents(events: EventsResponse) {
