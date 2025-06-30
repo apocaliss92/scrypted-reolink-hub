@@ -84,7 +84,6 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
 
     lastHubInfoCheck = undefined;
     lastErrorsCheck = Date.now();
-    lastBatteryValuesCheck = Date.now();
     lastDevicesStatusCheck = Date.now();
     cameraChannelMap = new Map<string, ReolinkCamera>();
 
@@ -186,8 +185,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                     });
                 }
 
-                if (now - this.lastBatteryValuesCheck > 10 * 1000 && anyBattery) {
-                    this.lastBatteryValuesCheck = now;
+                if (anyBattery) {
                     const { batteryInfoData, response } = await client.getBatteryInfo(devicesMap);
 
                     if (this.storageSettings.values.logDebug) {
