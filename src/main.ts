@@ -81,6 +81,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
         },
     });
 
+    lastHubInfoCheck = undefined;
     lastErrorsCheck = Date.now();
     lastBatteryValuesCheck = Date.now();
     lastDevicesStatusCheck = Date.now();
@@ -113,6 +114,16 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                 if (now - this.lastErrorsCheck > 60 * 1000) {
                     this.lastErrorsCheck = now;
                     await client.checkErrors();
+                }
+
+                if (now - this.lastHubInfoCheck > 60 * 1000) {
+                    const { abilities, hubData, } = await client.getHubInfo();
+                    const { devicesData, channelsResponse } = await client.getDevicesInfo();
+                    this.console.log(`Hub info: ${JSON.stringify({ abilities, hubData, devicesData, channelsResponse })}`);
+
+                    this.storageSettings.values.abilities = abilities;
+                    this.storageSettings.values.hubData = hubData;
+                    this.storageSettings.values.devicesData = devicesData;
                 }
 
                 const devicesMap = new Map<number, DeviceInputData>();
@@ -216,18 +227,6 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                 type: ScryptedDeviceType.API,
             }
         );
-
-        const { abilities, hubData, } = await client.getHubInfo();
-        const { devicesData, channelsResponse } = await client.getDevicesInfo();
-        this.console.log(`Hub info: ${JSON.stringify({ abilities, hubData, devicesData, channelsResponse })}`);
-
-        this.storageSettings.values.abilities = abilities;
-        this.storageSettings.values.hubData = hubData;
-        this.storageSettings.values.devicesData = devicesData;
-
-        // setTimeout(async () => {
-        //     const client = this.getClient();
-        // }, 1000 * 10);
     }
 
     async onRequest(request: HttpRequest, response: HttpResponse): Promise<void> {

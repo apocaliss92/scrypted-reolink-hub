@@ -154,16 +154,17 @@ export class ReolinkHubClient {
     }
 
     async login() {
-        if (this.tokenLease && this.tokenLease > Date.now()) {
+        if (this.parameters && this.tokenLease && this.tokenLease > Date.now()) {
             return;
         }
 
         if (this.loggingIn) {
             return;
         }
+
         this.loggingIn = true;
 
-        if (!this.tokenLease) {
+        if (!this.tokenLease || !this.parameters) {
             this.console.log(`Creating authentication session`);
         } else {
             this.console.log(`Token expired at ${new Date(this.tokenLease).toISOString()}, renewing`);
@@ -351,11 +352,6 @@ export class ReolinkHubClient {
     async getHubInfo() {
         const url = new URL(`http://${this.host}/api.cgi`);
         const body = [
-            {
-                cmd: "GetAbility",
-                action: 0,
-                param: { User: { userName: this.username } }
-            },
             {
                 cmd: "GetAbility",
                 action: 0,
@@ -788,25 +784,30 @@ export class ReolinkHubClient {
         const url = new URL(`http://${this.host}/api.cgi`);
 
         const body = [];
+        const chanelIndex: Record<number, { events?: number, motion?: number, }> = {};
 
         channelsMap.forEach(({ hasPirEvents }, channel) => {
+            chanelIndex[channel] = {};
             if (hasPirEvents) {
                 body.push({
                     cmd: 'GetEvents',
                     action: 0,
                     param: { channel }
                 });
+                chanelIndex[channel].events = body.length - 1;
             } else {
                 body.push({
                     cmd: 'GetMdState',
                     action: 0,
                     param: { channel }
                 });
+                chanelIndex[channel].motion = body.length - 1;
                 body.push({
                     cmd: 'GetAiState',
                     action: 0,
                     param: { channel }
                 });
+                chanelIndex[channel].events = body.length - 1;
             }
         })
 
@@ -820,7 +821,7 @@ export class ReolinkHubClient {
             return {};
         }
 
-        const ret: Record<number, EventsResponse> = {};
+        const channelData: Record<number, EventsResponse> = {};
 
         const processDetections = (aiResponse: any) => {
             const classes: string[] = [];
@@ -835,39 +836,30 @@ export class ReolinkHubClient {
             return classes;
         }
 
-        for (const item of response.body) {
-            const channel = item?.value?.channel;
-            const numericChannel = Number(channel);
+        channelsMap.forEach(({ hasPirEvents }, channel) => {
+            const { events, motion } = chanelIndex[channel];
+            channelData[channel] = { motion: false, objects: [], entries: [] };
 
-            if (Number.isNaN(numericChannel)) {
-                continue;
+            if (hasPirEvents) {
+                const eventsEntry = response?.body?.[events];
+                const classes = processDetections(eventsEntry?.value?.ai);
+                channelData[channel].motion = classes.includes('other');
+                channelData[channel].objects = classes.filter(cl => cl !== 'other');
+                channelData[channel].entries.push(eventsEntry);
+            } else {
+                const eventsEntry = response?.body?.[events];
+                const motionEntry = response?.body?.[motion];
+                const classes = processDetections(eventsEntry?.value?.ai);
+                channelData[channel].motion = motionEntry?.value?.state;
+                channelData[channel].objects = classes.filter(cl => cl !== 'other');
+                channelData[channel].entries.push(eventsEntry, motionEntry);
             }
-
-            const cmd = item?.cmd;
-
-            if (!ret[numericChannel]) {
-                ret[numericChannel] = { motion: false, objects: [], entries: [] };
-            }
-
-            const elem = ret[numericChannel];
-            elem.entries.push(item);
-
-            if (cmd === 'GetEvents') {
-                const classes = processDetections(item.value?.ai);
-                elem.motion = classes.includes('other');
-                elem.objects = classes.filter(cl => cl !== 'other');
-            } else if (cmd === 'GetMdState') {
-                elem.motion = item?.value?.state;
-            } else if (cmd === 'GetAiState') {
-                const classes = processDetections(item.value?.ai);
-                elem.objects = classes;
-            }
-        }
+        });
 
         this.printErrors(response, 'getEvents', body);
 
         return {
-            parsed: ret,
+            parsed: channelData,
             response: response.body,
             body: response.body
         };
