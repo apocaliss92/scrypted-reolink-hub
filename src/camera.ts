@@ -469,7 +469,7 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
         }
     }
 
-    async processDeviceStatusDatta(data: DeviceStatusResponse) {
+    async processDeviceStatusData(data: DeviceStatusResponse) {
         this.eventsEmitter.emit('data', JSON.stringify(data));
         const { floodlightEnabled, pirEnabled, ptzPresets, osd } = data;
 
@@ -477,11 +477,11 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
             this.console.log(`Device status received: ${JSON.stringify(data)}`);
         }
 
-        if (floodlightEnabled !== this.floodlight.on) {
+        if (this.floodlight && floodlightEnabled !== this.floodlight.on) {
             this.floodlight.on = floodlightEnabled;
         }
 
-        if (pirEnabled !== this.pirSensor.on) {
+        if (this.pirSensor && pirEnabled !== this.pirSensor.on) {
             this.pirSensor.on = pirEnabled;
         }
 

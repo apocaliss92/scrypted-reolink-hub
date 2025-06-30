@@ -198,7 +198,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                             const channel = camera.storageSettings.values.rtspChannel;
                             const cameraDeviceStatusData = deviceStatusData[channel];
                             if (cameraDeviceStatusData) {
-                                camera.processDeviceStatusDatta(cameraDeviceStatusData);
+                                camera.processDeviceStatusData(cameraDeviceStatusData);
                             }
                         }
                     });

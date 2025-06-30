@@ -914,8 +914,8 @@ export class ReolinkHubClient {
                 entries: [chnInfoItem, aiItem],
             };
 
-            !chnInfoItem.error && (ret[channel].channelInfo = chnInfoItem?.value);
-            !aiItem.error && (ret[channel].ai = aiItem?.value);
+            !chnInfoItem?.error && (ret[channel].channelInfo = chnInfoItem?.value);
+            !aiItem?.error && (ret[channel].ai = aiItem?.value);
             ret[channel].channelStatus = channelStatus;
 
             currentChannelIndex++;
