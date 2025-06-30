@@ -379,9 +379,9 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
     hasFloodlight() {
         const channelData = this.getAbilities();
 
-        const floodLightConfigVer = channelData.floodLight?.ver ?? 0;
-        const supportFLswitchConfigVer = channelData.supportFLswitch?.ver ?? 0;
-        const supportFLBrightnessConfigVer = channelData.supportFLBrightness?.ver ?? 0;
+        const floodLightConfigVer = channelData?.floodLight?.ver ?? 0;
+        const supportFLswitchConfigVer = channelData?.supportFLswitch?.ver ?? 0;
+        const supportFLBrightnessConfigVer = channelData?.supportFLBrightness?.ver ?? 0;
 
         return floodLightConfigVer > 0 || supportFLswitchConfigVer > 0 || supportFLBrightnessConfigVer > 0;
     }
