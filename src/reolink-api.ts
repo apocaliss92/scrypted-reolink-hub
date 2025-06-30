@@ -843,7 +843,7 @@ export class ReolinkHubClient {
             if (hasPirEvents) {
                 const eventsEntry = response?.body?.[events];
                 const classes = processDetections(eventsEntry?.value?.ai);
-                channelData[channel].motion = classes.includes('other');
+                channelData[channel].motion = classes.includes('other') || classes.length > 0;
                 channelData[channel].objects = classes.filter(cl => cl !== 'other');
                 channelData[channel].entries.push(eventsEntry);
             } else {

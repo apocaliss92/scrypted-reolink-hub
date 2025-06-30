@@ -17,6 +17,7 @@ export const videoclipsNativeId = 'reolinkHubVideoclips';
 class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandler, Reboot {
     client: ReolinkHubClient;
     videoclipsDevice: ReolinkVideoclips;
+    processing = false;
 
     storageSettings = new StorageSettings(this, {
         address: {
@@ -107,6 +108,10 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
         await client.login();
 
         setInterval(async () => {
+            if (this.processing) {
+                return;
+            }
+            this.processing = true;
             try {
                 const now = Date.now();
                 const client = this.getClient();
@@ -116,7 +121,8 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                     await client.checkErrors();
                 }
 
-                if (now - this.lastHubInfoCheck > 60 * 1000) {
+                if (!this.lastHubInfoCheck || now - this.lastHubInfoCheck > 1000 * 60 * 5) {
+                    this.lastHubInfoCheck = now;
                     const { abilities, hubData, } = await client.getHubInfo();
                     const { devicesData, channelsResponse } = await client.getDevicesInfo();
                     this.console.log(`Hub info: ${JSON.stringify({ abilities, hubData, devicesData, channelsResponse })}`);
@@ -136,25 +142,28 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                         anyFound = true;
                         const channel = camera.storageSettings.values.rtspChannel;
 
-                        const hasBattery = camera.hasBattery();
-                        const hasPirEvents = camera.hasPirEvents();
-                        const hasFloodlight = camera.hasFloodlight();
-                        const sleeping = camera.sleeping;
-                        const { hasPtz } = camera.getPtzCapabilities();
-                        devicesMap.set(Number(channel), {
-                            hasFloodlight,
-                            hasBattery,
-                            hasPirEvents,
-                            hasPtz,
-                            sleeping
-                        });
+                        const abilities = camera.getAbilities();
+                        if (abilities) {
+                            const hasBattery = camera.hasBattery();
+                            const hasPirEvents = camera.hasPirEvents();
+                            const hasFloodlight = camera.hasFloodlight();
+                            const sleeping = camera.sleeping;
+                            const { hasPtz } = camera.getPtzCapabilities();
+                            devicesMap.set(Number(channel), {
+                                hasFloodlight,
+                                hasBattery,
+                                hasPirEvents,
+                                hasPtz,
+                                sleeping
+                            });
 
-                        if (hasBattery && !anyBattery) {
-                            anyBattery = true;
-                        }
+                            if (hasBattery && !anyBattery) {
+                                anyBattery = true;
+                            }
 
-                        if (!sleeping && !anyAwaken) {
-                            anyAwaken = true;
+                            if (!sleeping && !anyAwaken) {
+                                anyAwaken = true;
+                            }
                         }
                     }
                 });
@@ -216,6 +225,8 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                 }
             } catch (e) {
                 this.console.log('Error on events flow', e);
+            } finally {
+                this.processing = false;
             }
         }, 1000);
 
