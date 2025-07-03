@@ -437,9 +437,9 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
         const rtspChannel = this.getRtspChannel()
         name = this.plugin.storageSettings.values.devicesData[rtspChannel]?.channelStatus?.name;
 
-        // if (this.storageSettings.values.ptz?.length) {
-        //     interfaces.push(ScryptedInterface.PanTiltZoom);
-        // }
+        if (this.getPtzCapabilities().hasPtz) {
+            interfaces.push(ScryptedInterface.PanTiltZoom);
+        }
         if ((await this.getObjectTypes()).classes.length > 0) {
             interfaces.push(ScryptedInterface.ObjectDetector);
         }
