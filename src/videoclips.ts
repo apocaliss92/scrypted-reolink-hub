@@ -16,20 +16,15 @@ export default class ReolinkVideoclips extends ScryptedDeviceBase implements Mix
         this.plugin = plugin;
     }
 
-    // async maybeEnableMixin(device: ScryptedDevice) {
-    // if (device.pluginId === pluginId && device.nativeId !== birdseyeCameraNativeId) {
-    //     super.maybeEnableMixin(device);
-    // } else {
-    //     return;
-    // }
-    // }
-
     async putSetting(key: string, value: SettingValue): Promise<void> {
         return this.storageSettings.putSetting(key, value);
     }
 
     public getLogger() {
-        return this.plugin.console;
+        return getBaseLogger({
+            console: this.console,
+            storage: this.storageSettings,
+        });
     }
 
     async getSettings() {

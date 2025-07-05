@@ -7,6 +7,7 @@ import { OnvifIntercom } from '../../scrypted/plugins/reolink/src/onvif-intercom
 import { createRtspMediaStreamOptions, Destroyable, RtspSmartCamera, UrlMediaStreamOptions } from "../../scrypted/plugins/rtsp/src/rtsp";
 import ReolinkProvider from './main';
 import { AIState, BatteryInfoResponse, DeviceStatusResponse, Enc, EventsResponse } from './reolink-api';
+import { getBaseLogger, logLevelSetting } from '../../scrypted-apocaliss-base/src/basePlugin';
 
 export const moToB64 = async (mo: MediaObject) => {
     const bufferImage = await sdk.mediaManager.convertMediaObjectToBuffer(mo, 'image/jpeg');
@@ -121,14 +122,13 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
     eventsEmitter: Destroyable;
 
     storageSettings = new StorageSettings(this, {
+        logLevel: {
+            ...logLevelSetting,
+        },
         doorbell: {
             title: 'Doorbell',
             description: 'This camera is a Reolink Doorbell.',
             type: 'boolean',
-        },
-        logDebug: {
-            title: 'Log debug messages',
-            type: 'boolean'
         },
         rtspChannel: {
             subgroup: 'Advanced',
@@ -224,15 +224,22 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
         if (!Number.isNaN(channel)) {
             this.plugin.cameraChannelMap.set(this.id, this);
         }
-        this.init().catch(this.console.error);
+        this.init().catch(this.getLogger().error);
+    }
+
+    public getLogger() {
+        return getBaseLogger({
+            console: this.console,
+            storage: this.storageSettings,
+        });
     }
 
     async init() {
         setTimeout(async () => {
-            const api = this.getClient();
+            const logger = this.getLogger();
 
             while (!this.plugin.client.loggedIn) {
-                this.console.log('Waiting for plugin connection');
+                logger.log('Waiting for plugin connection');
                 await sleep(3000);
             }
 
@@ -243,10 +250,7 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
 
             if (this.hasBattery() && !this.storageSettings.getItem('prebufferSet')) {
                 const device = sdk.systemManager.getDeviceById<Settings>(this.id);
-                // const allSettings = await device.getSettings();
-                // const currentPrebuffer = allSettings.find(item => item.key === 'prebuffer:enabledStreams');
-                // this.console.log(JSON.stringify(currentPrebuffer));
-                this.console.log('Disabling prebbufer for battery cam');
+                logger.log('Disabling prebbufer for battery cam');
                 await device.putSetting('prebuffer:enabledStreams', '[]');
                 this.storageSettings.values.prebufferSet = true;
             }
@@ -454,11 +458,10 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
 
     async processBatteryData(data: BatteryInfoResponse) {
         this.eventsEmitter.emit('data', JSON.stringify(data));
+        const logger = this.getLogger();
         const { batteryLevel, sleeping } = data;
 
-        if (this.storageSettings.values.logDebug) {
-            this.console.log(`Battery info received: ${JSON.stringify(data)}`);
-        }
+        logger.info(`Battery info received: ${JSON.stringify(data)}`);
 
         if (sleeping !== this.sleeping) {
             this.sleeping = sleeping;
@@ -472,10 +475,9 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
     async processDeviceStatusData(data: DeviceStatusResponse) {
         this.eventsEmitter.emit('data', JSON.stringify(data));
         const { floodlightEnabled, pirEnabled, ptzPresets, osd } = data;
+        const logger = this.getLogger();
 
-        if (this.storageSettings.values.logDebug) {
-            this.console.log(`Device status received: ${JSON.stringify(data)}`);
-        }
+        logger.info(`Device status received: ${JSON.stringify(data)}`);
 
         if (this.floodlight && floodlightEnabled !== this.floodlight.on) {
             this.floodlight.on = floodlightEnabled;
@@ -520,14 +522,14 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
 
     createOnvifClient() {
         const { username, password } = this.plugin.storageSettings.values;
-        return connectCameraAPI(this.plugin.getHttpAddress(), username, password, this.console, this.storageSettings.values.doorbell ? this.storage.getItem('onvifDoorbellEvent') : undefined);
+        return connectCameraAPI(this.plugin.getHttpAddress(), username, password, this.getLogger(), this.storageSettings.values.doorbell ? this.storage.getItem('onvifDoorbellEvent') : undefined);
     }
 
     async processEvents(events: EventsResponse) {
         this.eventsEmitter.emit('data', JSON.stringify(events));
-        if (this.storageSettings.values.logDebug) {
-            this.console.log(`Events received: ${JSON.stringify(events)}`);
-        }
+        const logger = this.getLogger();
+
+        logger.info(`Events received: ${JSON.stringify(events)}`);
 
         if (events.motion !== this.motionDetected) {
             if (events.motion) {
@@ -587,19 +589,20 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
     async takeSmartCameraPicture(options?: RequestPictureOptions): Promise<MediaObject> {
         const isBattery = this.hasBattery();
         const now = Date.now();
+        const logger = this.getLogger();
 
         const isMaxTimePassed = !this.lastSnapshotTaken || ((now - this.lastSnapshotTaken) > 1000 * 60 * 60);
         const isBatteryTimePassed = !this.lastSnapshotTaken || ((now - this.lastSnapshotTaken) > 1000 * 15);
         let canTake = false;
 
         if (!this.lastB64Snapshot || !this.lastSnapshotTaken) {
-            this.console.log('Allowing new snapshot because not taken yet');
+            logger.log('Allowing new snapshot because not taken yet');
             canTake = true;
         } else if (this.sleeping && isMaxTimePassed) {
-            this.console.log('Allowing new snapshot while sleeping because older than 1 hour');
+            logger.log('Allowing new snapshot while sleeping because older than 1 hour');
             canTake = true;
         } else if (!this.sleeping && isBattery && isBatteryTimePassed) {
-            this.console.log('Allowing new snapshot because older than 15 seconds');
+            logger.log('Allowing new snapshot because older than 15 seconds');
             canTake = true;
         } else {
             canTake = true;
@@ -661,18 +664,11 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
             return;
         }
 
-        // let deviceInfo: DevInfo;
-        // try {
-        //     deviceInfo = await client.getDeviceInfo(this.getRtspChannel());
-        // } catch (e) {
-        //     this.console.error("Unable to gather device information.", e);
-        // }
-
         let encoderConfig: Enc;
         try {
             encoderConfig = await client.getEncoderConfiguration(this.getRtspChannel());
         } catch (e) {
-            this.console.error("Codec query failed. Falling back to known defaults.", e);
+            this.getLogger().error("Codec query failed. Falling back to known defaults.", e);
         }
 
         const rtspChannel = this.getRtspChannel();
@@ -802,7 +798,7 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
                     // 4k h265 rtmp is seemingly nonfunctional, but rtsp works. swap them so there is a functional stream.
                     if (mainStream.vType === 'h265' || mainStream.vType === 'hevc') {
                         if (stream.id === `h264Preview_${channel}_main`) {
-                            this.console.warn('Detected h265. Change the camera configuration to use 2k mode to force h264. https://docs.scrypted.app/camera-preparation.html#h-264-video-codec');
+                            this.getLogger().warn('Detected h265. Change the camera configuration to use 2k mode to force h264. https://docs.scrypted.app/camera-preparation.html#h-264-video-codec');
                             stream.video.codec = 'h265';
                             stream.id = `h265Preview_${channel}_main`;
                             stream.name = `RTSP ${stream.id}`;

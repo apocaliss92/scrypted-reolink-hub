@@ -9,6 +9,7 @@ import { name } from '../package.json';
 import { ReolinkCamera } from "./camera";
 import { DeviceInputData, ReolinkHubClient } from './reolink-api';
 import ReolinkVideoclips from "./videoclips";
+import { getBaseLogger, logLevelSetting } from "../../scrypted-apocaliss-base/src/basePlugin";
 
 export const pluginId = name;
 export const REOLINK_HUB_VIDEOCLIPS_INTERFACE = `${pluginId}:videoclips`;
@@ -20,6 +21,9 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
     processing = false;
 
     storageSettings = new StorageSettings(this, {
+        logLevel: {
+            ...logLevelSetting,
+        },
         address: {
             title: 'HUB IP',
             type: 'string',
@@ -47,11 +51,6 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
             placeholder: '554',
             defaultValue: 554,
             type: 'number'
-        },
-        logDebug: {
-            subgroup: 'Advanced',
-            title: 'Log debug messages',
-            type: 'boolean'
         },
         downloadFolder: {
             title: 'Directory where to cache thumbnails and videoclips',
@@ -89,8 +88,16 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
 
     constructor() {
         super();
+        const logger = this.getLogger();
 
-        this.init().catch(this.console.error);
+        this.init().catch(logger.error);
+    }
+
+    public getLogger() {
+        return getBaseLogger({
+            console: this.console,
+            storage: this.storageSettings,
+        });
     }
 
     async reboot() {
@@ -105,6 +112,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
     async init() {
         const client = this.getClient();
         await client.login();
+        const logger = this.getLogger();
 
         setInterval(async () => {
             if (this.processing) {
@@ -124,7 +132,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                     this.lastHubInfoCheck = now;
                     const { abilities, hubData, } = await client.getHubInfo();
                     const { devicesData, channelsResponse } = await client.getDevicesInfo();
-                    this.console.log(`Hub info: ${JSON.stringify({ abilities, hubData, devicesData, channelsResponse })}`);
+                    logger.log(`Hub info: ${JSON.stringify({ abilities, hubData, devicesData, channelsResponse })}`);
 
                     this.storageSettings.values.abilities = abilities;
                     this.storageSettings.values.hubData = hubData;
@@ -170,9 +178,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                 if (anyFound) {
                     const eventsRes = await client.getEvents(devicesMap);
 
-                    if (this.storageSettings.values.logDebug) {
-                        this.console.log(`Events call result: ${JSON.stringify(eventsRes)}`);
-                    }
+                    logger.info(`Events call result: ${JSON.stringify(eventsRes)}`);
 
                     this.cameraChannelMap.forEach((camera) => {
                         if (camera) {
@@ -188,9 +194,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                 if (anyBattery) {
                     const { batteryInfoData, response } = await client.getBatteryInfo(devicesMap);
 
-                    if (this.storageSettings.values.logDebug) {
-                        this.console.log(`Battery info call result: ${JSON.stringify({ batteryInfoData, response })}`);
-                    }
+                    logger.info(`Battery info call result: ${JSON.stringify({ batteryInfoData, response })}`);
 
                     this.cameraChannelMap.forEach((camera) => {
                         if (camera) {
@@ -207,9 +211,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                     this.lastDevicesStatusCheck = now;
                     const { deviceStatusData, response } = await client.getStatusInfo(devicesMap);
 
-                    if (this.storageSettings.values.logDebug) {
-                        this.console.log(`Status info call result: ${JSON.stringify({ deviceStatusData, response })}`);
-                    }
+                    logger.info(`Status info call result: ${JSON.stringify({ deviceStatusData, response })}`);
 
                     this.cameraChannelMap.forEach((camera) => {
                         if (camera) {
@@ -222,7 +224,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                     });
                 }
             } catch (e) {
-                this.console.log('Error on events flow', e);
+                this.getLogger().error('Error on events flow', e);
             } finally {
                 this.processing = false;
             }
@@ -241,12 +243,14 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
     async onRequest(request: HttpRequest, response: HttpResponse): Promise<void> {
         const url = new URL(`http://localhost${request.url}`);
         const params = url.searchParams.get('params') ?? '{}';
+        const logger = this.getLogger();
 
         try {
             const [_, __, ___, ____, _____, webhook] = url.pathname.split('/');
             const { nativeId, videoclipPath } = JSON.parse(params);
-            const dev = this.devices.get(nativeId);
-            const deviceId = dev.id;
+            const tmpDev = this.devices.get(nativeId);
+            const deviceId = tmpDev.id;
+            const dev = this.videoclipsDevice.currentMixinsMap[deviceId];
             const devConsole = dev.console;
             const actualDevice = sdk.systemManager.getDeviceById<VideoClips>(deviceId);
 
@@ -294,7 +298,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                                 await sendVideo();
                                 return;
                             } catch (e) {
-                                devConsole.log('Error fetching videoclip', e);
+                                devConsole.error('Error fetching videoclip', e);
                             }
                         } else {
                             response.sendFile(videoclipPath, {
@@ -334,7 +338,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                                         reject(err);
                                     }
                                 }).on('error', (e) => {
-                                    devConsole.log('Error fetching videoclip', e);
+                                    devConsole.error('Error fetching videoclip', e);
                                     reject(e)
                                 });
                             });
@@ -344,12 +348,12 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                             await sendVideo();
                             return;
                         } catch (e) {
-                            devConsole.log('Error fetching videoclip', e);
+                            devConsole.error('Error fetching videoclip', e);
                         }
                     }
                 } else
                     if (webhook === 'thumbnail') {
-                        devConsole.log(`Thumbnail requested: ${JSON.stringify({
+                        devConsole.info(`Thumbnail requested: ${JSON.stringify({
                             videoclipPath,
                             deviceId,
                         })}`);
@@ -363,7 +367,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                         return;
                     }
             } catch (e) {
-                devConsole.log(`Error in webhook`, e);
+                devConsole.error(`Error in webhook`, e);
                 response.send(`${JSON.stringify(e)}, ${e.message}`, {
                     code: 400,
                 });
@@ -377,7 +381,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
 
             return;
         } catch (e) {
-            this.console.log('Error in data parsing for webhook', e);
+            logger.error('Error in data parsing for webhook', e);
             response.send(`Error in data parsing for webhook: ${JSON.stringify({
                 params,
                 url: request.url
@@ -405,7 +409,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
     getClient() {
         if (!this.client) {
             const { password, username } = this.storageSettings.values;
-            this.client = new ReolinkHubClient(this.getHttpAddress(), username, password, this.console);
+            this.client = new ReolinkHubClient(this.getHttpAddress(), username, password, this.getLogger());
         }
         return this.client;
     }
@@ -441,7 +445,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
             await api.jpegSnapshot(rtspChannel);
         }
         catch (e) {
-            this.console.error('Error adding Reolink camera', e);
+            this.getLogger().error('Error adding Reolink camera', e);
             throw e;
         }
 
@@ -482,7 +486,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
         try {
             return new ReolinkCamera(nativeId, this);
         } catch (e) {
-            this.console.log('Error creating device', nativeId, e)
+            this.getLogger().error('Error creating device', nativeId, e)
         }
     }
 }

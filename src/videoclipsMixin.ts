@@ -10,6 +10,7 @@ import { getFolderPaths, parseVideoclipName, splitDateRangeByDay } from "../../s
 import { ReolinkCamera } from "./camera";
 import { pluginId } from "./main";
 import ReolinkVideoclips from "./videoclips";
+import { getBaseLogger, logLevelSetting } from "../../scrypted-apocaliss-base/src/basePlugin";
 
 const { endpointManager } = sdk;
 
@@ -35,11 +36,8 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
     generatingThumbnails = false;
 
     storageSettings = new StorageSettings(this, {
-        debug: {
-            title: 'Log debug messages',
-            type: 'boolean',
-            defaultValue: false,
-            immediate: true,
+        logLevel: {
+            ...logLevelSetting,
         },
         ftp: {
             title: 'Fetch from FTP folder',
@@ -54,8 +52,8 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
             onPut: async () => this.checkFtpScan()
         },
         filenamePrefix: {
-            title: 'Filename prefix',
-            description: 'This should contain any text of the clip names outside of the date numbers. I.e. Videocamera dispensa_00_20250105123640.mp4 -> Videocamera dispensa_00_',
+            title: 'Filename content (leave empty to let plugin find the clips)',
+            description: 'This should contain any relevant text to identify the camera clips. I.e. Videocamera dispensa_00_20250105123640.mp4 -> Videocamera dispensa_00_',
             type: 'string',
             onPut: async () => this.checkFtpScan()
         },
@@ -79,44 +77,54 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
 
         const logger = this.getLogger();
 
+        this.plugin.currentMixinsMap[this.id] = this;
+
         this.camera = this.plugin.plugin.devices.get(this.nativeId);
         this.checkFtpScan().catch(logger.log);
 
+        this.thumbnailsGeneratorInterval && clearInterval(this.thumbnailsGeneratorInterval);
         this.thumbnailsGeneratorInterval = setInterval(async () => {
-            if (!this.generatingThumbnails && this.thumbnailsToGenerate.length) {
+            if (!this.generatingThumbnails) {
                 this.generatingThumbnails = true;
-                for (const thumbnailId of this.thumbnailsToGenerate) {
-                    const { filename: filenameSrc, videoclipUrl, thumbnailFolder } = await this.getVideoclipParams(thumbnailId);
 
-                    try {
-                        const filename = filenameSrc.replaceAll(' ', '_');
-                        const outputThumbnailFile = path.join(thumbnailFolder, `${filename}.jpg`);
+                if (this.thumbnailsToGenerate.length) {
+                    for (const thumbnailId of this.thumbnailsToGenerate) {
+                        const { filename: filenameSrc, videoclipUrl, thumbnailFolder } = await this.getVideoclipParams(thumbnailId);
 
-                        const mo = await sdk.mediaManager.createFFmpegMediaObject({
-                            inputArguments: [
-                                '-ss', '00:00:05',
-                                '-i', videoclipUrl,
-                            ],
-                        });
-                        const jpeg = await sdk.mediaManager.convertMediaObjectToBuffer(mo, 'image/jpeg');
-                        if (jpeg.length) {
-                            logger.log(`Saving thumbnail in ${outputThumbnailFile}`);
-                            await fs.promises.writeFile(outputThumbnailFile, jpeg);
-                        } else {
-                            logger.log('Not saving, image is corrupted');
+                        try {
+                            const filename = filenameSrc.replaceAll(' ', '_');
+                            const outputThumbnailFile = path.join(thumbnailFolder, `${filename}.jpg`);
+
+                            const mo = await sdk.mediaManager.createFFmpegMediaObject({
+                                inputArguments: [
+                                    '-ss', '00:00:05',
+                                    '-i', videoclipUrl,
+                                ],
+                            });
+                            const jpeg = await sdk.mediaManager.convertMediaObjectToBuffer(mo, 'image/jpeg');
+                            if (jpeg.length) {
+                                logger.log(`Saving thumbnail in ${outputThumbnailFile}`);
+                                await fs.promises.writeFile(outputThumbnailFile, jpeg);
+                            } else {
+                                logger.log('Not saving, image is corrupted');
+                            }
+                        } catch (e) {
+                            logger.log('Failed generating thumbnail', videoclipUrl, thumbnailId, e);
                         }
-                    } catch (e) {
-                        logger.log('Failed generating thumbnail',videoclipUrl, thumbnailId, e);
                     }
+                    this.thumbnailsToGenerate = [];
                 }
+
                 this.generatingThumbnails = false;
-                this.thumbnailsToGenerate = [];
             }
         }, 10000);
     }
 
     public getLogger() {
-        return this.console;
+        return getBaseLogger({
+            console: this.console,
+            storage: this.storageSettings,
+        });
     }
 
     async release() {
@@ -141,17 +149,33 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
         this.ftpScanTimeout = undefined;
     }
 
+    get fileNamePrefix() {
+        const { filenamePrefix } = this.storageSettings.values;
+
+        if (filenamePrefix) {
+            return filenamePrefix;
+        }
+
+        let channel = String(this.camera.getRtspChannel());
+        if (channel.length === 1) {
+            channel = `0${channel}`;
+        }
+
+        return `_${channel}_`;
+    }
+
     async startFtpScan() {
         const logger = this.getLogger();
-        const { ftpFolder, filenamePrefix } = this.storageSettings.values;
+        const { ftpFolder } = this.storageSettings.values;
         this.stopFtpScan();
+        const filenamePrefix = this.fileNamePrefix;
 
         const searchFile = async (dir: string, currentResult: VideoclipFileData[] = []) => {
             const result: VideoclipFileData[] = [...currentResult];
             const files = await fs.promises.readdir(dir) || [];
 
             const filteredFiles = files.filter(file =>
-                (filenamePrefix ? file.startsWith(filenamePrefix) : true) &&
+                (filenamePrefix ? file.includes(filenamePrefix) : true) &&
                 file.endsWith('mp4')
             );
             logger.debug(`Files found: ${JSON.stringify({ files, filteredFiles })}`);
@@ -205,6 +229,7 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
             return result;
         }
 
+        this.ftpScanTimeout && clearInterval(this.ftpScanTimeout);
         this.ftpScanTimeout = setInterval(async () => {
             try {
                 const now = Date.now();
@@ -227,11 +252,16 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
 
     async scanFs(newMaxMemory?: number) {
         const logger = this.getLogger();
+        if (!this.storageSettings.values.ftp) {
+            return;
+        }
+
         logger.log(`Starting FS scan: ${JSON.stringify({ newMaxMemory })}`);
 
-        const { ftpFolder, filenamePrefix } = this.storageSettings.values;
+        const { ftpFolder } = this.storageSettings.values;
         const { maxSpaceInGb: maxSpaceInGbSrc } = this.storageSettings.values;
         const maxSpaceInGb = newMaxMemory ?? maxSpaceInGbSrc;
+        const filenamePrefix = this.fileNamePrefix;
 
         const { occupiedSpaceInGb, occupiedSpaceInGbNumber, freeMemory } = await calculateSize({
             currentPath: ftpFolder,
@@ -372,7 +402,7 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                         });
                     }
                 }
-                logger.log(`Videoclips found:`, JSON.stringify({ videoclips }));
+                logger.info(`Videoclips found:`, JSON.stringify({ videoclips }));
             } else {
                 const api = await this.getClient();
 
@@ -388,7 +418,7 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                     allSearchedElements.push(...response);
                 }
 
-                logger.log(`Videoclips found:`, JSON.stringify({
+                logger.info(`Videoclips found:`, JSON.stringify({
                     allSearchedElements,
                     dateRanges,
                     token: api.parameters.token
@@ -466,7 +496,7 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
 
     async getVideoClipThumbnail(thumbnailId: string, options?: VideoClipThumbnailOptions): Promise<MediaObject> {
         const logger = this.getLogger();
-        logger.log('Fetching thumbnailId ', thumbnailId);
+        logger.info('Fetching thumbnailId ', thumbnailId);
         const { filename: filenameSrc, videoclipUrl, thumbnailFolder } = await this.getVideoclipParams(thumbnailId);
         const filename = filenameSrc.replaceAll(' ', '_');
         const outputThumbnailFile = path.join(thumbnailFolder, `${filename}.jpg`);
@@ -474,13 +504,56 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
 
         try {
             if (fs.existsSync(outputThumbnailFile) && fs.statSync(outputThumbnailFile).size === 0) {
-                console.log(`Thumbnail ${outputThumbnailFile} corrupted, removing.`);
+                logger.log(`Thumbnail ${outputThumbnailFile} corrupted, removing.`);
                 fs.rmSync(outputThumbnailFile);
             }
 
             if (!fs.existsSync(outputThumbnailFile)) {
-                this.thumbnailsToGenerate.push(thumbnailId);
-                console.log(`Thumbnail not found in ${outputThumbnailFile}, generating.`);
+                let shouldGenerate = false;
+
+                if (this.storageSettings.values.ftp) {
+                    try {
+                        const parts = thumbnailId.split('.')[0].split('_');
+                        const timestamp = Number(parts[parts.length - 1]);
+
+                        const dir = path.dirname(thumbnailId);
+
+                        const jpgNearby = fs.readdirSync(dir)
+                            .filter(file => file.endsWith('.jpg'))
+                            .find(file => {
+                                const m = file.endsWith('.jpg');
+                                if (!m) return false;
+                                const partsInner = file.split('.')[0].split('_');
+                                const timestampInner = Number(partsInner[partsInner.length - 1]);
+
+                                const diff = Math.abs(timestampInner - timestamp);
+                                return diff <= 2 * 1000;
+                            });
+
+                        if (jpgNearby) {
+                            const jpegPath = path.join(this.storageSettings.values.ftpFolder, jpgNearby);
+                            const filename = filenameSrc.replaceAll(' ', '_');
+                            const outputThumbnailFile = path.join(thumbnailFolder, `${filename}.jpg`);
+                            const jpeg = await fs.promises.readFile(jpegPath)
+                            if (jpeg.length) {
+                                logger.log(`Copying thumbnail in ${outputThumbnailFile}`);
+                                await fs.promises.writeFile(outputThumbnailFile, jpeg);
+                            } else {
+                                logger.log('Not saving, image is corrupted');
+                                shouldGenerate = true;
+                            }
+                        } else {
+                            shouldGenerate = true;
+                        }
+                    } catch {
+                        shouldGenerate = true;
+                    }
+                }
+
+                if (shouldGenerate) {
+                    logger.log(`Thumbnail not found in ${outputThumbnailFile}, generating.`);
+                    this.thumbnailsToGenerate.push(thumbnailId);
+                }
             } else {
                 const fileURLToPath = url.pathToFileURL(outputThumbnailFile).toString();
                 thumbnailMo = await sdk.mediaManager.createMediaObjectFromUrl(fileURLToPath);
@@ -488,7 +561,7 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
 
             return thumbnailMo;
         } catch (e) {
-            console.error(`Error retrieving thumbnail of videoclip ${filename} (${videoclipUrl})`, e);
+            logger.error(`Error retrieving thumbnail of videoclip ${filename} (${videoclipUrl})`, e);
             fs.existsSync(outputThumbnailFile) && fs.rmSync(outputThumbnailFile);
 
             return null;
@@ -500,8 +573,11 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
     }
 
     async getMixinSettings(): Promise<Setting[]> {
-        this.storageSettings.settings.filenamePrefix.hide = !this.storageSettings.values.ftp;
-        this.storageSettings.settings.ftpFolder.hide = !this.storageSettings.values.ftp;
+        const isFtp = this.storageSettings.values.ftp;
+        this.storageSettings.settings.filenamePrefix.hide = !isFtp;
+        this.storageSettings.settings.ftpFolder.hide = !isFtp;
+        this.storageSettings.settings.maxSpaceInGb.hide = !isFtp;
+        this.storageSettings.settings.occupiedSpaceInGb.hide = !isFtp;
 
         const settings = await this.storageSettings.getSettings();
 
