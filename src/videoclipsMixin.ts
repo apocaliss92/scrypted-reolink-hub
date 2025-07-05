@@ -31,9 +31,6 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
     logger: Console;
     lastScanFs: number;
     camera: ReolinkCamera;
-    thumbnailsToGenerate: string[] = [];
-    thumbnailsGeneratorInterval: NodeJS.Timeout;
-    generatingThumbnails = false;
 
     storageSettings = new StorageSettings(this, {
         logLevel: {
@@ -81,43 +78,6 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
 
         this.camera = this.plugin.plugin.devices.get(this.nativeId);
         this.checkFtpScan().catch(logger.log);
-
-        this.thumbnailsGeneratorInterval && clearInterval(this.thumbnailsGeneratorInterval);
-        this.thumbnailsGeneratorInterval = setInterval(async () => {
-            if (!this.generatingThumbnails) {
-                this.generatingThumbnails = true;
-
-                if (this.thumbnailsToGenerate.length) {
-                    for (const thumbnailId of this.thumbnailsToGenerate) {
-                        const { filename: filenameSrc, videoclipUrl, thumbnailFolder } = await this.getVideoclipParams(thumbnailId);
-
-                        try {
-                            const filename = filenameSrc.replaceAll(' ', '_');
-                            const outputThumbnailFile = path.join(thumbnailFolder, `${filename}.jpg`);
-
-                            const mo = await sdk.mediaManager.createFFmpegMediaObject({
-                                inputArguments: [
-                                    '-ss', '00:00:05',
-                                    '-i', videoclipUrl,
-                                ],
-                            });
-                            const jpeg = await sdk.mediaManager.convertMediaObjectToBuffer(mo, 'image/jpeg');
-                            if (jpeg.length) {
-                                logger.log(`Saving thumbnail in ${outputThumbnailFile}`);
-                                await fs.promises.writeFile(outputThumbnailFile, jpeg);
-                            } else {
-                                logger.log('Not saving, image is corrupted');
-                            }
-                        } catch (e) {
-                            logger.log('Failed generating thumbnail', videoclipUrl, thumbnailId, e);
-                        }
-                    }
-                    this.thumbnailsToGenerate = [];
-                }
-
-                this.generatingThumbnails = false;
-            }
-        }, 10000);
     }
 
     public getLogger() {
@@ -129,7 +89,6 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
 
     async release() {
         this.killed = true;
-        this.thumbnailsGeneratorInterval && clearInterval(this.thumbnailsGeneratorInterval);
     }
 
     async checkFtpScan() {
@@ -554,7 +513,7 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
 
                 if (shouldGenerate) {
                     logger.log(`Thumbnail not found in ${outputThumbnailFile}, generating.`);
-                    this.thumbnailsToGenerate.push(thumbnailId);
+                    this.plugin.thumbnailsToGenerate.push({ thumbnailId, deviceId: this.id });
                 }
             } else {
                 const fileURLToPath = url.pathToFileURL(outputThumbnailFile).toString();
