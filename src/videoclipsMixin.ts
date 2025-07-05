@@ -548,6 +548,8 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                     } catch {
                         shouldGenerate = true;
                     }
+                } else {
+                    shouldGenerate = true;
                 }
 
                 if (shouldGenerate) {

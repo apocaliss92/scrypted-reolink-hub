@@ -251,7 +251,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
             const tmpDev = this.devices.get(nativeId);
             const deviceId = tmpDev.id;
             const dev = this.videoclipsDevice.currentMixinsMap[deviceId];
-            const devConsole = dev.console;
+            const devConsole = dev.getLogger();
             const actualDevice = sdk.systemManager.getDeviceById<VideoClips>(deviceId);
 
             try {
@@ -358,13 +358,22 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                             deviceId,
                         })}`);
                         const thumbnailMo = await actualDevice.getVideoClipThumbnail(videoclipPath);
-                        const jpeg = await sdk.mediaManager.convertMediaObjectToBuffer(thumbnailMo, 'image/jpeg');
-                        response.send(jpeg, {
-                            headers: {
-                                'Content-Type': 'image/jpeg',
-                            }
-                        });
-                        return;
+                        if (thumbnailMo) {
+                            const jpeg = await sdk.mediaManager.convertMediaObjectToBuffer(thumbnailMo, 'image/jpeg');
+                            response.send(jpeg, {
+                                headers: {
+                                    'Content-Type': 'image/jpeg',
+                                }
+                            });
+                            return;
+                        } else {
+                            response.send('', {
+                                headers: {
+                                    'Content-Type': 'image/jpeg',
+                                }
+                            });
+                            return;
+                        }
                     }
             } catch (e) {
                 devConsole.error(`Error in webhook`, e);
