@@ -352,30 +352,29 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                             devConsole.error('Error fetching videoclip', e);
                         }
                     }
-                } else
-                    if (webhook === 'thumbnail') {
-                        devConsole.info(`Thumbnail requested: ${JSON.stringify({
-                            videoclipPath,
-                            deviceId,
-                        })}`);
-                        const thumbnailMo = await actualDevice.getVideoClipThumbnail(videoclipPath);
-                        if (thumbnailMo) {
-                            const jpeg = await sdk.mediaManager.convertMediaObjectToBuffer(thumbnailMo, 'image/jpeg');
-                            response.send(jpeg, {
-                                headers: {
-                                    'Content-Type': 'image/jpeg',
-                                }
-                            });
-                            return;
-                        } else {
-                            response.send('', {
-                                headers: {
-                                    'Content-Type': 'image/jpeg',
-                                }
-                            });
-                            return;
-                        }
+                } else if (webhook === 'thumbnail') {
+                    devConsole.info(`Thumbnail requested: ${JSON.stringify({
+                        videoclipPath,
+                        deviceId,
+                    })}`);
+                    const thumbnailMo = await actualDevice.getVideoClipThumbnail(videoclipPath);
+                    if (thumbnailMo) {
+                        const jpeg = await sdk.mediaManager.convertMediaObjectToBuffer(thumbnailMo, 'image/jpeg');
+                        response.send(jpeg, {
+                            headers: {
+                                'Content-Type': 'image/jpeg',
+                            }
+                        });
+                        return;
+                    } else {
+                        response.send('', {
+                            headers: {
+                                'Content-Type': 'image/jpeg',
+                            }
+                        });
+                        return;
                     }
+                }
             } catch (e) {
                 devConsole.error(`Error in webhook`, e);
                 response.send(`${JSON.stringify(e)}, ${e.message}`, {

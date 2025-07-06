@@ -28,7 +28,7 @@ export default class ReolinkVideoclips extends ScryptedDeviceBase implements Mix
                     const { deviceId, thumbnailId } = item;
                     const deviceMixin = this.currentMixinsMap[deviceId];
                     const deviceLogger = deviceMixin.getLogger();
-                    deviceLogger.log(`Generating clip ${thumbnailId}`);
+                    deviceLogger.log(`Generating thumbnail of clip ${thumbnailId}`);
                     this.generatingThumbnails = true;
 
                     const { filename: filenameSrc, videoclipUrl, thumbnailFolder } = await deviceMixin.getVideoclipParams(thumbnailId);

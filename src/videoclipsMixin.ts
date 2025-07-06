@@ -10,7 +10,7 @@ import { getFolderPaths, parseVideoclipName, splitDateRangeByDay } from "../../s
 import { ReolinkCamera } from "./camera";
 import { pluginId } from "./main";
 import ReolinkVideoclips from "./videoclips";
-import { getBaseLogger, logLevelSetting } from "../../scrypted-apocaliss-base/src/basePlugin";
+// const { videoDuration } = require("@numairawan/video-duration");
 
 const { endpointManager } = sdk;
 
@@ -37,19 +37,19 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
             title: 'Fetch from FTP folder',
             type: 'boolean',
             immediate: true,
-            onPut: async () => this.checkFtpScan()
+            onPut: async () => await this.checkFtpScan()
         },
         ftpFolder: {
             title: 'FTP folder',
             description: 'FTP folder where reolink stores the clips',
             type: 'string',
-            onPut: async () => this.checkFtpScan()
+            onPut: async () => await this.checkFtpScan()
         },
         filenamePrefix: {
             title: 'Filename content (leave empty to let plugin find the clips)',
             description: 'This should contain any relevant text to identify the camera clips. I.e. Videocamera dispensa_00_20250105123640.mp4 -> Videocamera dispensa_00_',
             type: 'string',
-            onPut: async () => this.checkFtpScan()
+            onPut: async () => await this.checkFtpScan()
         },
         maxSpaceInGb: {
             title: 'Dedicated memory in GB',
@@ -86,9 +86,14 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
     async checkFtpScan() {
         if (!this.killed) {
             const { ftp, ftpFolder } = this.storageSettings.values;
+            const logger = this.getLogger();
             if (ftp && ftpFolder) {
+                !this.ftpScanTimeout && logger.log(`FTP folder scan interval started`);
+
                 await this.startFtpScan();
             } else {
+                this.ftpScanTimeout && logger.log(`FTP folder scan interval stopped`);
+
                 this.stopFtpScan();
             }
         }
@@ -190,7 +195,10 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                 this.ftpScanData = await searchFile(ftpFolder);
 
                 // Every 1 hour
-                if (!this.lastScanFs || (now - this.lastScanFs) > (1000 * 60 * 60)) {
+                if (
+                    this.storageSettings.values.ftp &&
+                    (!this.lastScanFs || (now - this.lastScanFs) > (1000 * 60 * 60))
+                ) {
                     await this.scanFs();
                 }
             }
@@ -205,11 +213,8 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
 
     async scanFs(newMaxMemory?: number) {
         const logger = this.getLogger();
-        if (!this.storageSettings.values.ftp) {
-            return;
-        }
 
-        logger.log(`Starting FS scan`);
+        logger.log(`FS scan initialized`);
 
         const { ftpFolder } = this.storageSettings.values;
         const { maxSpaceInGb: maxSpaceInGbSrc } = this.storageSettings.values;
@@ -329,12 +334,14 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                     const timestamp = this.processDate(item.time);
 
                     if (item.type === 'video' && timestamp >= options.startTime && timestamp <= options.endTime) {
-                        // Check if possible to fetch it with decent performances
-                        const durationInMs = 30;
                         const videoclipPath = item.fullPath;
 
                         const event = 'motion';
                         const { thumbnailUrl, videoclipUrl } = await this.getVideoclipWebhookUrls(videoclipPath);
+
+                        // const duration = await videoDuration(videoclipPath);
+                        // logger.log(videoclipPath, duration);
+
                         videoclips.push({
                             id: videoclipPath,
                             startTime: timestamp,
@@ -451,6 +458,7 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
         const filename = filenameSrc.replaceAll(' ', '_');
         const outputThumbnailFile = path.join(thumbnailFolder, `${filename}.jpg`);
         let thumbnailMo: MediaObject;
+        let shouldReturn = false;
 
         try {
             if (fs.existsSync(outputThumbnailFile) && fs.statSync(outputThumbnailFile).size === 0) {
@@ -465,13 +473,14 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                     try {
                         const parts = thumbnailId.split('.')[0].split('_');
                         const timestamp = Number(parts[parts.length - 1]);
+                        const fileNamePrefix = this.fileNamePrefix;
 
                         const dir = path.dirname(thumbnailId);
 
                         const jpgNearby = fs.readdirSync(dir)
                             .filter(file => file.endsWith('.jpg'))
                             .find(file => {
-                                const m = file.endsWith('.jpg');
+                                const m = file.endsWith('.jpg') && file.includes(fileNamePrefix);
                                 if (!m) return false;
                                 const partsInner = file.split('.')[0].split('_');
                                 const timestampInner = Number(partsInner[partsInner.length - 1]);
@@ -488,6 +497,8 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                             if (jpeg.length) {
                                 logger.log(`Copying thumbnail in ${outputThumbnailFile}`);
                                 await fs.promises.writeFile(outputThumbnailFile, jpeg);
+
+                                shouldReturn = true;
                             } else {
                                 logger.log('Not saving, image is corrupted');
                                 shouldGenerate = true;
@@ -507,6 +518,10 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                     this.plugin.thumbnailsToGenerate.push({ thumbnailId, deviceId: this.id });
                 }
             } else {
+                shouldReturn = true;
+            }
+
+            if (shouldReturn) {
                 const fileURLToPath = url.pathToFileURL(outputThumbnailFile).toString();
                 thumbnailMo = await sdk.mediaManager.createMediaObjectFromUrl(fileURLToPath);
             }

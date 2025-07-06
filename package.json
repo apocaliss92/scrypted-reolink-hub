@@ -1,6 +1,6 @@
 {
   "name": "@apocaliss92/scrypted-reolink-hub",
-  "version": "0.0.30",
+  "version": "0.0.31",
   "description": "Reolink (HUBs) Plugin for Scrypted",
   "author": "Scrypted",
   "license": "Apache",
@@ -38,6 +38,7 @@
     ]
   },
   "dependencies": {
+    "@numairawan/video-duration": "^1.0.0",
     "@scrypted/common": "file:../scrypted/common",
     "@scrypted/sdk": "file:../scrypted/sdk",
     "@types/lodash": "^4.17.18",
