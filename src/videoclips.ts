@@ -1,7 +1,7 @@
 import sdk, { MixinProvider, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, SettingValue, WritableDeviceState } from "@scrypted/sdk";
 import { StorageSettings, StorageSettingsDict } from "@scrypted/sdk/storage-settings";
 import { getBaseLogger } from '../../scrypted-apocaliss-base/src/basePlugin';
-import FrigateBridgePlugin, { pluginId, REOLINK_HUB_VIDEOCLIPS_INTERFACE } from "./main";
+import ReolinkProvider, { pluginId, REOLINK_HUB_VIDEOCLIPS_INTERFACE } from "./main";
 import ReolinkVideoclipssMixins from "./videoclipsMixin";
 import path from 'path';
 import fs from 'fs';
@@ -11,12 +11,12 @@ export default class ReolinkVideoclips extends ScryptedDeviceBase implements Mix
     };
     storageSettings = new StorageSettings(this, this.initStorage);
     currentMixinsMap: Record<string, ReolinkVideoclipssMixins> = {};
-    plugin: FrigateBridgePlugin;
+    plugin: ReolinkProvider;
     thumbnailsToGenerate: { deviceId: string, thumbnailId: string }[] = [];
     thumbnailsGeneratorInterval: NodeJS.Timeout;
     generatingThumbnails = false;
 
-    constructor(nativeId: string, plugin: FrigateBridgePlugin) {
+    constructor(nativeId: string, plugin: ReolinkProvider) {
         super(nativeId);
         this.plugin = plugin;
 

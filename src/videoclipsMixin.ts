@@ -33,9 +33,6 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
     camera: ReolinkCamera;
 
     storageSettings = new StorageSettings(this, {
-        logLevel: {
-            ...logLevelSetting,
-        },
         ftp: {
             title: 'Fetch from FTP folder',
             type: 'boolean',
@@ -72,19 +69,14 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
     constructor(options: SettingsMixinDeviceOptions<any>, private plugin: ReolinkVideoclips) {
         super(options);
 
-        const logger = this.getLogger();
-
         this.plugin.currentMixinsMap[this.id] = this;
 
         this.camera = this.plugin.plugin.devices.get(this.nativeId);
-        this.checkFtpScan().catch(logger.log);
+        setTimeout(() => this.checkFtpScan().catch(this.getLogger()?.log), 3000);
     }
 
     public getLogger() {
-        return getBaseLogger({
-            console: this.console,
-            storage: this.storageSettings,
-        });
+        return this.camera?.getLogger();
     }
 
     async release() {
@@ -92,11 +84,13 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
     }
 
     async checkFtpScan() {
-        const { ftp, ftpFolder } = this.storageSettings.values;
-        if (ftp && ftpFolder) {
-            await this.startFtpScan();
-        } else {
-            this.stopFtpScan();
+        if (!this.killed) {
+            const { ftp, ftpFolder } = this.storageSettings.values;
+            if (ftp && ftpFolder) {
+                await this.startFtpScan();
+            } else {
+                this.stopFtpScan();
+            }
         }
     }
 
@@ -215,7 +209,7 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
             return;
         }
 
-        logger.log(`Starting FS scan: ${JSON.stringify({ newMaxMemory })}`);
+        logger.log(`Starting FS scan`);
 
         const { ftpFolder } = this.storageSettings.values;
         const { maxSpaceInGb: maxSpaceInGbSrc } = this.storageSettings.values;
@@ -361,7 +355,6 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                         });
                     }
                 }
-                logger.info(`Videoclips found:`, JSON.stringify({ videoclips }));
             } else {
                 const api = await this.getClient();
 
@@ -376,12 +369,6 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                     );
                     allSearchedElements.push(...response);
                 }
-
-                logger.info(`Videoclips found:`, JSON.stringify({
-                    allSearchedElements,
-                    dateRanges,
-                    token: api.parameters.token
-                }));
 
                 for (const searchElement of allSearchedElements) {
                     const videoclipPath = searchElement.name;
@@ -418,6 +405,10 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                 }
             }
 
+
+            logger.info(`Videoclips found:`, JSON.stringify({
+                videoclips,
+            }));
             return videoclips;
         } catch (e) {
             logger.log('Error during get videoClips', e);

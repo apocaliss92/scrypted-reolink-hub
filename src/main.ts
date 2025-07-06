@@ -132,7 +132,8 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                     this.lastHubInfoCheck = now;
                     const { abilities, hubData, } = await client.getHubInfo();
                     const { devicesData, channelsResponse } = await client.getDevicesInfo();
-                    logger.log(`Hub info: ${JSON.stringify({ abilities, hubData, devicesData, channelsResponse })}`);
+                    logger.log('Hub info data fetched');
+                    logger.info(`${JSON.stringify({ abilities, hubData, devicesData, channelsResponse })}`);
 
                     this.storageSettings.values.abilities = abilities;
                     this.storageSettings.values.hubData = hubData;
@@ -178,7 +179,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                 if (anyFound) {
                     const eventsRes = await client.getEvents(devicesMap);
 
-                    logger.info(`Events call result: ${JSON.stringify(eventsRes)}`);
+                    logger.debug(`Events call result: ${JSON.stringify(eventsRes)}`);
 
                     this.cameraChannelMap.forEach((camera) => {
                         if (camera) {
@@ -194,7 +195,7 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                 if (anyBattery) {
                     const { batteryInfoData, response } = await client.getBatteryInfo(devicesMap);
 
-                    logger.info(`Battery info call result: ${JSON.stringify({ batteryInfoData, response })}`);
+                    logger.debug(`Battery info call result: ${JSON.stringify({ batteryInfoData, response })}`);
 
                     this.cameraChannelMap.forEach((camera) => {
                         if (camera) {

@@ -461,7 +461,7 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
         const logger = this.getLogger();
         const { batteryLevel, sleeping } = data;
 
-        logger.info(`Battery info received: ${JSON.stringify(data)}`);
+        logger.debug(`Battery info received: ${JSON.stringify(data)}`);
 
         if (sleeping !== this.sleeping) {
             this.sleeping = sleeping;
@@ -529,7 +529,7 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
         this.eventsEmitter.emit('data', JSON.stringify(events));
         const logger = this.getLogger();
 
-        logger.info(`Events received: ${JSON.stringify(events)}`);
+        logger.debug(`Events received: ${JSON.stringify(events)}`);
 
         if (events.motion !== this.motionDetected) {
             if (events.motion) {
