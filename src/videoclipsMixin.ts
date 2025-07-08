@@ -10,6 +10,7 @@ import { getFolderPaths, parseVideoclipName, splitDateRangeByDay } from "../../s
 import { ReolinkCamera } from "./camera";
 import { pluginId } from "./main";
 import ReolinkVideoclips from "./videoclips";
+import { getBaseLogger } from "../../scrypted-apocaliss-base/src/basePlugin";
 // const { videoDuration } = require("@numairawan/video-duration");
 
 const { endpointManager } = sdk;
@@ -27,6 +28,7 @@ const videoclippathRegex = new RegExp('(.*)([0-9]{4})([0-9]{2})([0-9]{2})([0-9]{
 export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any> implements Settings, VideoClips {
     killed: boolean;
     ftpScanTimeout: NodeJS.Timeout;
+    checkInterval: NodeJS.Timeout;
     ftpScanData: VideoclipFileData[] = [];
     logger: Console;
     lastScanFs: number;
@@ -37,19 +39,16 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
             title: 'Fetch from FTP folder',
             type: 'boolean',
             immediate: true,
-            onPut: async () => await this.checkFtpScan()
         },
         ftpFolder: {
             title: 'FTP folder',
             description: 'FTP folder where reolink stores the clips',
             type: 'string',
-            onPut: async () => await this.checkFtpScan()
         },
         filenamePrefix: {
             title: 'Filename content (leave empty to let plugin find the clips)',
             description: 'This should contain any relevant text to identify the camera clips. I.e. Videocamera dispensa_00_20250105123640.mp4 -> Videocamera dispensa_00_',
             type: 'string',
-            onPut: async () => await this.checkFtpScan()
         },
         maxSpaceInGb: {
             title: 'Dedicated memory in GB',
@@ -76,11 +75,17 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
     }
 
     public getLogger() {
-        return this.camera?.getLogger();
+        // return this.camera?.getLogger();
+        return getBaseLogger({
+            console: this.console,
+            storage: this.camera.storageSettings,
+        });
     }
 
     async release() {
         this.killed = true;
+        this.checkInterval && clearInterval(this.checkInterval);
+        this.ftpScanTimeout && clearInterval(this.ftpScanTimeout);
     }
 
     async checkFtpScan() {
@@ -477,17 +482,25 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
 
                         const dir = path.dirname(thumbnailId);
 
-                        const jpgNearby = fs.readdirSync(dir)
-                            .filter(file => file.endsWith('.jpg'))
-                            .find(file => {
+                        let sameTimestamp: string;
+
+                        const jpgCandidates = fs.readdirSync(dir)
+                            .filter(file => {
                                 const m = file.endsWith('.jpg') && file.includes(fileNamePrefix);
                                 if (!m) return false;
                                 const partsInner = file.split('.')[0].split('_');
                                 const timestampInner = Number(partsInner[partsInner.length - 1]);
 
+                                if (timestamp === timestampInner) {
+                                    sameTimestamp = file;
+                                    return true;
+                                }
+
                                 const diff = Math.abs(timestampInner - timestamp);
-                                return diff <= 2 * 1000;
+                                return diff <= 200;
                             });
+
+                        const jpgNearby = sameTimestamp ?? jpgCandidates[0];
 
                         if (jpgNearby) {
                             const jpegPath = path.join(this.storageSettings.values.ftpFolder, jpgNearby);
