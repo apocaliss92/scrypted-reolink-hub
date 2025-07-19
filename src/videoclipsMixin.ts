@@ -155,19 +155,6 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
         return false;
     }
 
-    /**
-     * Checks if a video is blacklisted
-     * @param videoPath The path of the video to check
-     * @returns true if the video is blacklisted
-     */
-    private isVideoBlacklisted(videoPath: string): boolean {
-        return this.blacklistedVideos.has(videoPath);
-    }
-
-    private clearVideoError(videoPath: string): void {
-        this.videoErrorCount.delete(videoPath);
-    }
-
     async startVideoclipsParser() {
         this.stopVideoclipsParser();
         const logger = this.getLogger();
@@ -181,7 +168,7 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                     const foundVideos = await this.searchSourceFptFiles(ftpFolder);
 
                     if (foundVideos.length) {
-                        const videosToProcess = foundVideos.filter(video => !this.isVideoBlacklisted(video.fullPath));
+                        const videosToProcess = foundVideos.filter(video => !this.blacklistedVideos.has(video.fullPath));
                         const blacklistedCount = foundVideos.length - videosToProcess.length;
 
                         if (blacklistedCount > 0) {
@@ -226,15 +213,14 @@ export default class ReolinkVideoclipssMixin extends SettingsMixinDeviceBase<any
                                         const newThumbnailPath = path.join(parsedFolder, newThumbnailName);
 
                                         await fs.promises.copyFile(fullPath, newVideoPath);
-                                        await fs.promises.unlink(fullPath);
+                                        await fs.promises.rm(fullPath, { force: true, maxRetries: 10 });
 
                                         await fs.promises.writeFile(newThumbnailPath, foundThumbnailBuffer);
 
                                         logger.log(`Successfully processed video: ${filename} -> ${newVideoName} (${duration}s)`);
                                         logger.log(`Successfully processed thumbnail: ${foundThumbnailBuffer.length} bytes -> ${newThumbnailName}`);
 
-                                        // Clear error count on successful processing
-                                        this.clearVideoError(fullPath);
+                                        this.videoErrorCount.delete(fullPath)
                                     } else {
                                         logger.warn(`No thumbnail found for video: ${filename}`);
                                         // Handle error for missing thumbnail
