@@ -1,10 +1,10 @@
+import { sleep } from "@scrypted/common/src/sleep";
 import sdk, { MixinProvider, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, SettingValue, WritableDeviceState } from "@scrypted/sdk";
 import { StorageSettings, StorageSettingsDict } from "@scrypted/sdk/storage-settings";
+import fs from 'fs';
 import { getBaseLogger } from '../../scrypted-apocaliss-base/src/basePlugin';
 import ReolinkProvider, { pluginId, REOLINK_HUB_VIDEOCLIPS_INTERFACE } from "./main";
 import ReolinkVideoclipssMixins from "./videoclipsMixin";
-import path from 'path';
-import fs from 'fs';
 
 export default class ReolinkVideoclips extends ScryptedDeviceBase implements MixinProvider {
     initStorage: StorageSettingsDict<string> = {
@@ -12,16 +12,21 @@ export default class ReolinkVideoclips extends ScryptedDeviceBase implements Mix
     storageSettings = new StorageSettings(this, this.initStorage);
     currentMixinsMap: Record<string, ReolinkVideoclipssMixins> = {};
     plugin: ReolinkProvider;
+    ffmpegPath: string;
     thumbnailsToGenerate: { deviceId: string, thumbnailId: string }[] = [];
-    thumbnailsGeneratorInterval: NodeJS.Timeout;
     generatingThumbnails = false;
 
     constructor(nativeId: string, plugin: ReolinkProvider) {
         super(nativeId);
         this.plugin = plugin;
+        const logger = this.getLogger();
+        this.init().catch(logger.error);
+    }
 
-        this.thumbnailsGeneratorInterval && clearInterval(this.thumbnailsGeneratorInterval);
-        this.thumbnailsGeneratorInterval = setInterval(async () => {
+    async init() {
+        this.ffmpegPath = await sdk.mediaManager.getFFmpegPath();
+
+        setInterval(async () => {
             if (!this.generatingThumbnails) {
                 const item = this.thumbnailsToGenerate.shift();
                 if (item) {
@@ -31,30 +36,22 @@ export default class ReolinkVideoclips extends ScryptedDeviceBase implements Mix
                     deviceLogger.log(`Generating thumbnail of clip ${thumbnailId}`);
                     this.generatingThumbnails = true;
 
-                    const { filename: filenameSrc, videoclipUrl, thumbnailFolder } = await deviceMixin.getVideoclipParams(thumbnailId);
+                    const { videoclipUrl, thumbnailUrl } = await deviceMixin.getVideoclipParams(thumbnailId);
 
                     try {
-                        const filename = filenameSrc.replaceAll(' ', '_');
-                        const outputThumbnailFile = path.join(thumbnailFolder, `${filename}.jpg`);
-
-                        const mo = await sdk.mediaManager.createFFmpegMediaObject({
-                            inputArguments: [
-                                '-ss', '00:00:05',
-                                '-i', videoclipUrl,
-                            ],
-                        });
-                        const jpeg = await sdk.mediaManager.convertMediaObjectToBuffer(mo, 'image/jpeg');
+                        const jpeg = await deviceMixin.generateThumbnail(videoclipUrl);
                         if (jpeg.length) {
-                            deviceLogger.log(`Saving thumbnail in ${outputThumbnailFile}`);
-                            await fs.promises.writeFile(outputThumbnailFile, jpeg);
+                            deviceLogger.log(`Saving thumbnail in ${thumbnailUrl}`);
+                            await fs.promises.writeFile(thumbnailUrl, jpeg);
                         } else {
                             deviceLogger.log('Not saving, image is corrupted');
                         }
                     } catch (e) {
                         deviceLogger.log('Failed generating thumbnail', videoclipUrl, thumbnailId, e);
+                    } finally {
+                        this.generatingThumbnails = false;
+                        await sleep(3000);
                     }
-
-                    this.generatingThumbnails = false;
                 }
             }
         }, 1000);
