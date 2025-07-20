@@ -895,7 +895,7 @@ export class ReolinkHubClient {
 
         let currentChannelIndex = 0;
         for (const channel of channels) {
-            const indexMultilpier = currentChannelIndex * 3;
+            const indexMultilpier = currentChannelIndex * 2;
 
             const chnInfoItem = response.body[indexMultilpier];
             const aiItem = response.body[indexMultilpier + 1];

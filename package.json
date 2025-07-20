@@ -1,6 +1,6 @@
 {
   "name": "@apocaliss92/scrypted-reolink-hub",
-  "version": "0.0.34",
+  "version": "0.0.35",
   "description": "Reolink (HUBs) Plugin for Scrypted",
   "repository": {
     "type": "git",

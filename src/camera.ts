@@ -543,7 +543,6 @@ export class ReolinkCamera extends RtspSmartCamera implements Camera, DeviceProv
             }
         }
 
-
         if (events.objects.length) {
             const od: ObjectsDetected = {
                 timestamp: Date.now(),

@@ -2,14 +2,13 @@ import sdk, { DeviceCreatorSettings, DeviceInformation, HttpRequest, HttpRequest
 import { StorageSettings } from '@scrypted/sdk/storage-settings';
 import fs from 'fs';
 import http from 'http';
+import { getBaseLogger, logLevelSetting } from "../../scrypted-apocaliss-base/src/basePlugin";
 import { cleanup } from "../../scrypted-reolink-videoclips/src/utils";
-import { DevInfo } from '../../scrypted/plugins/reolink/src/probe';
 import { RtspProvider } from "../../scrypted/plugins/rtsp/src/rtsp";
 import { name } from '../package.json';
 import { ReolinkCamera } from "./camera";
 import { DeviceInputData, ReolinkHubClient } from './reolink-api';
 import ReolinkVideoclips from "./videoclips";
-import { getBaseLogger, logLevelSetting } from "../../scrypted-apocaliss-base/src/basePlugin";
 
 export const pluginId = name;
 export const REOLINK_HUB_VIDEOCLIPS_INTERFACE = `${pluginId}:videoclips`;
@@ -131,9 +130,9 @@ class ReolinkProvider extends RtspProvider implements Settings, HttpRequestHandl
                 if (!this.lastHubInfoCheck || now - this.lastHubInfoCheck > 1000 * 60 * 5) {
                     this.lastHubInfoCheck = now;
                     const { abilities, hubData, } = await client.getHubInfo();
-                    const { devicesData, channelsResponse } = await client.getDevicesInfo();
+                    const { devicesData, channelsResponse, response } = await client.getDevicesInfo();
                     logger.log('Hub info data fetched');
-                    logger.info(`${JSON.stringify({ abilities, hubData, devicesData, channelsResponse })}`);
+                    logger.info(`${JSON.stringify({ abilities, hubData, devicesData, channelsResponse, response })}`);
 
                     this.storageSettings.values.abilities = abilities;
                     this.storageSettings.values.hubData = hubData;
