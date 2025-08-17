@@ -828,7 +828,7 @@ export class ReolinkHubClient {
             for (const key of Object.keys(aiResponse ?? {})) {
                 if (key === 'channel')
                     continue;
-                const { support, alarm_state } = aiResponse[key];
+                const { alarm_state } = aiResponse[key];
                 if (alarm_state)
                     classes.push(key);
             }
@@ -849,8 +849,8 @@ export class ReolinkHubClient {
             } else {
                 const eventsEntry = response?.body?.[events];
                 const motionEntry = response?.body?.[motion];
-                const classes = processDetections(eventsEntry?.value?.ai);
-                channelData[channel].motion = motionEntry?.value?.state;
+                const classes = processDetections(eventsEntry?.value);
+                channelData[channel].motion = motionEntry?.value?.state || classes.length > 0;
                 channelData[channel].objects = classes.filter(cl => cl !== 'other');
                 channelData[channel].entries.push(eventsEntry, motionEntry);
             }
